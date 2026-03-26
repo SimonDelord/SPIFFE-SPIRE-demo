@@ -1,0 +1,23 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# SPIRE data
+*.sqlite3
+*.json
+*.crt
+*.key
+*.pem
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
