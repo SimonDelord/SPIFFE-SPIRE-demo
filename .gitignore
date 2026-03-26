@@ -21,3 +21,14 @@ Thumbs.db
 # Temporary files
 tmp/
 temp/
+
+# Kubernetes config (contains credentials)
+.kubeconfig
+kubeconfig
+*.kubeconfig
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+venv/
