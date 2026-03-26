@@ -72,15 +72,27 @@ This project demonstrates a complete zero-trust identity architecture:
 │   │   ├── deployment.yaml
 │   │   ├── service.yaml
 │   │   └── route.yaml
-│   └── spire-operator/         # Red Hat Zero Trust Workload Identity Manager
+│   ├── spire-operator/         # Red Hat Zero Trust Workload Identity Manager
+│   │   ├── namespace.yaml
+│   │   ├── operatorgroup.yaml
+│   │   ├── subscription.yaml
+│   │   ├── zerotrustworkloadidentitymanager.yaml
+│   │   ├── spireserver.yaml
+│   │   ├── spireagent.yaml
+│   │   ├── spiffecsidriver.yaml
+│   │   └── spireoidcdiscoveryprovider.yaml
+│   └── spiffe-demo/            # SPIFFE workload identity demo
 │       ├── namespace.yaml
-│       ├── operatorgroup.yaml
-│       ├── subscription.yaml
-│       ├── zerotrustworkloadidentitymanager.yaml
-│       ├── spireserver.yaml
-│       ├── spireagent.yaml
-│       ├── spiffecsidriver.yaml
-│       └── spireoidcdiscoveryprovider.yaml
+│       ├── clusterspiffeid.yaml        # Auto-registers workloads with SPIRE
+│       ├── api-server-*.yaml           # API server manifests
+│       └── client-app-*.yaml           # Client app manifests
+├── spiffe-demo-app/            # SPIFFE demo applications source code
+│   ├── api-server.py           # API that validates JWT-SVIDs via OIDC
+│   ├── client-app.py           # Client that gets JWT-SVIDs from SPIRE
+│   ├── Dockerfile.api
+│   ├── Dockerfile.client
+│   ├── requirements-api.txt
+│   └── requirements-client.txt
 ├── spire-server/               # SPIRE Server configurations (legacy)
 ├── spire-agent/                # SPIRE Agent configurations (legacy)
 ├── workloads/                  # Example workload configurations
@@ -261,7 +273,98 @@ The SPIRE OIDC Discovery Provider exposes these endpoints:
 
 ---
 
-## Part 3: Integration Scenarios
+## Part 3: SPIFFE Workload Identity Demo
+
+This demo shows how workloads use JWT-SVIDs from SPIRE to authenticate to other services, with the receiving service validating tokens via SPIRE's OIDC Discovery Provider.
+
+### Architecture
+
+```
+┌─────────────────┐                         ┌─────────────────────────┐
+│  Client App     │  1. Get JWT-SVID        │   SPIRE Agent           │
+│  (spiffe-demo)  │ ◄───────────────────────│   (via CSI Driver)      │
+└────────┬────────┘                         └─────────────────────────┘
+         │
+         │ 2. Call API with JWT-SVID in Authorization header
+         ▼
+┌─────────────────┐  3. Fetch JWKS          ┌─────────────────────────┐
+│  API Server     │ ────────────────────────►│ SPIRE OIDC Discovery   │
+│  (validates     │                          │ Provider               │
+│   JWT tokens)   │ ◄────────────────────────│ /keys                  │
+└─────────────────┘  4. Validate JWT-SVID    └─────────────────────────┘
+         │
+         │ 5. Return protected data (if valid)
+         ▼
+```
+
+### How It Works
+
+1. **ClusterSPIFFEID** - Automatically registers matching pods with SPIRE
+2. **SPIFFE CSI Driver** - Mounts the Workload API socket into pods
+3. **Client App** - Uses py-spiffe library to get JWT-SVIDs from SPIRE Agent
+4. **API Server** - Validates JWT-SVIDs using PyJWT + JWKS from OIDC Discovery Provider
+
+### Deploy the Demo
+
+```bash
+# Create namespace
+oc apply -f k8s/spiffe-demo/namespace.yaml
+
+# Create service accounts
+oc apply -f k8s/spiffe-demo/api-server-serviceaccount.yaml
+oc apply -f k8s/spiffe-demo/client-app-serviceaccount.yaml
+
+# Create image streams and build configs
+oc apply -f k8s/spiffe-demo/api-server-imagestream.yaml
+oc apply -f k8s/spiffe-demo/client-app-imagestream.yaml
+oc apply -f k8s/spiffe-demo/api-server-buildconfig.yaml
+oc apply -f k8s/spiffe-demo/client-app-buildconfig.yaml
+
+# Build applications
+oc start-build spiffe-api-server --from-dir=spiffe-demo-app -n spiffe-demo --follow
+oc start-build spiffe-client-app --from-dir=spiffe-demo-app -n spiffe-demo --follow
+
+# Deploy applications
+oc apply -f k8s/spiffe-demo/api-server-deployment.yaml
+oc apply -f k8s/spiffe-demo/api-server-service.yaml
+oc apply -f k8s/spiffe-demo/api-server-route.yaml
+
+oc apply -f k8s/spiffe-demo/client-app-deployment.yaml
+oc apply -f k8s/spiffe-demo/client-app-service.yaml
+oc apply -f k8s/spiffe-demo/client-app-route.yaml
+
+# Register workload with SPIRE
+oc apply -f k8s/spiffe-demo/clusterspiffeid.yaml
+```
+
+### Test the Demo
+
+1. **API Server** - Visit the API server URL to see available endpoints
+   ```bash
+   oc get route spiffe-api-server -n spiffe-demo -o jsonpath='{.spec.host}'
+   ```
+
+2. **Client App** - Visit the client app URL and use the interactive buttons:
+   ```bash
+   oc get route spiffe-client-app -n spiffe-demo -o jsonpath='{.spec.host}'
+   ```
+
+   - **Fetch My Identity** - Shows your SPIFFE ID from SPIRE
+   - **Get JWT-SVID** - Fetches a JWT token from SPIRE Agent
+   - **Call Protected API** - Uses JWT-SVID to authenticate to the API server
+   - **Call Public API** - Calls unauthenticated endpoint for comparison
+
+### Key Files
+
+| File | Description |
+|------|-------------|
+| `clusterspiffeid.yaml` | Tells SPIRE which pods get SPIFFE identities |
+| `api-server.py` | Validates JWT-SVIDs using SPIRE's OIDC JWKS endpoint |
+| `client-app.py` | Uses py-spiffe library to fetch JWT-SVIDs |
+
+---
+
+## Part 4: Integration Scenarios
 
 ### Scenario 1: User + Workload Identity
 
