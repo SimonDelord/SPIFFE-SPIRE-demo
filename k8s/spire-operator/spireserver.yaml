@@ -1,0 +1,26 @@
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  logLevel: "info"
+  logFormat: "text"
+  jwtIssuer: "https://oidc-discovery.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com"
+  caValidity: "24h"
+  defaultX509Validity: "1h"
+  defaultJWTValidity: "5m"
+  jwtKeyType: "rsa-2048"
+  caSubject:
+    country: "US"
+    organization: "Red Hat Demo"
+    commonName: "SPIRE Server CA"
+  persistence:
+    size: "1Gi"
+    accessMode: "ReadWriteOnce"
+  datastore:
+    databaseType: "sqlite3"
+    connectionString: "/run/spire/data/datastore.sqlite3"
+    maxOpenConns: 100
+    maxIdleConns: 10
+    connMaxLifetime: 0
+    disableMigration: "false"

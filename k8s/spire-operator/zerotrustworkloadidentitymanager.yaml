@@ -1,0 +1,11 @@
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+  name: cluster
+  labels:
+    app.kubernetes.io/name: zero-trust-workload-identity-manager
+    app.kubernetes.io/managed-by: zero-trust-workload-identity-manager
+spec:
+  trustDomain: "apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com"
+  clusterName: "rosa-cluster"
+  bundleConfigMap: "spire-bundle"
