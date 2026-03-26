@@ -469,6 +469,164 @@ SPIFFE identities can be used with service meshes like Istio for mutual TLS (mTL
 
 ---
 
+## Part 6: Bidirectional OIDC ↔ SPIFFE Integration
+
+### Direction 1: SPIFFE → OIDC (Natively Supported ✅)
+
+SPIFFE-enabled workloads can authenticate to OIDC-only systems:
+
+```
+┌─────────────────┐     JWT-SVID        ┌─────────────────┐     Validate via JWKS    ┌─────────────────┐
+│  SPIFFE App     │ ─────────────────►  │  OIDC-only App  │ ─────────────────────►   │ SPIRE OIDC      │
+│                 │                     │                 │                          │ Discovery       │
+└─────────────────┘                     └─────────────────┘                          └─────────────────┘
+```
+
+**How it works:**
+1. SPIRE issues JWT-SVIDs that look like standard OIDC tokens
+2. SPIRE OIDC Discovery Provider exposes `/.well-known/openid-configuration` and `/keys`
+3. Any OIDC-compatible system can validate JWT-SVIDs using standard JWKS validation
+
+**This is what our demo implements** - the Unified API validates JWT-SVIDs from SPIRE.
+
+---
+
+### Direction 2: OIDC → SPIFFE (Requires Custom Integration ⚠️)
+
+When an OIDC-only client needs to talk to a SPIFFE-enabled service, there is **no built-in feature** in SPIRE. Here are the options:
+
+#### Option A: SPIFFE App Accepts Both (Recommended)
+
+Configure the SPIFFE-enabled app to also accept OIDC tokens:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│   SPIFFE-enabled App (also accepts OIDC)                                    │
+│                                                                              │
+│   Trusted Sources:                                                           │
+│   ┌────────────────────────────┐    ┌────────────────────────────┐          │
+│   │ SPIRE (X.509 or JWT-SVID)  │    │ Keycloak (OIDC tokens)     │          │
+│   │ For SPIFFE workloads       │    │ For external OIDC clients  │          │
+│   └────────────────────────────┘    └────────────────────────────┘          │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Pros:** Simple, no additional infrastructure
+**Cons:** App must be modified to validate multiple token types
+
+**Example:** Our Unified API demonstrates this pattern.
+
+---
+
+#### Option B: Gateway/Proxy Pattern
+
+Put a SPIFFE-enabled gateway in front of the SPIFFE app:
+
+```
+┌─────────────┐   OIDC token     ┌─────────────────┐   mTLS (SVID)   ┌─────────────┐
+│  OIDC-only  │ ───────────────► │   API Gateway   │ ──────────────► │  SPIFFE App │
+│  Client     │                  │   (SPIFFE)      │                 │  (mTLS only)│
+└─────────────┘                  │                 │                 └─────────────┘
+                                 │ • Validates     │
+                                 │   OIDC token    │
+                                 │ • Has own SVID  │
+                                 │ • Uses mTLS     │
+                                 │   internally    │
+                                 └─────────────────┘
+```
+
+**Pros:** No changes to backend SPIFFE apps
+**Cons:** Additional infrastructure, gateway becomes identity boundary
+
+**Implementation options:**
+- Envoy with ext_authz filter
+- Istio ingress gateway
+- Custom API gateway
+
+---
+
+#### Option C: Token Exchange Service
+
+Build a service that exchanges OIDC tokens for SPIFFE identities:
+
+```
+┌─────────────┐   1. OIDC token    ┌─────────────────────┐   3. Proxy SVID   ┌─────────────┐
+│  OIDC-only  │ ─────────────────► │   Token Exchange    │ ────────────────► │  OIDC-only  │
+│  Client     │                    │   Service           │                   │  Client now │
+└─────────────┘                    │   (SPIFFE-enabled)  │                   │  has SVID   │
+                                   │                     │                   └──────┬──────┘
+                                   │ 2. Validate OIDC    │                          │
+                                   │    Request SVID     │                          │
+                                   │    for caller       │                          │
+                                   └─────────────────────┘                          │
+                                                                                    ▼
+                                                                             ┌─────────────┐
+                                                                             │  SPIFFE App │
+                                                                             └─────────────┘
+```
+
+**Pros:** Clean separation, true identity conversion
+**Cons:** Custom development required, security considerations for identity delegation
+
+**Note:** This is similar to OAuth2 Token Exchange (RFC 8693) but for SPIFFE.
+
+---
+
+#### Option D: Kubernetes OIDC (Already Built-In)
+
+If your OIDC client is a Kubernetes workload, SPIRE already does this!
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│   Kubernetes Workload → SPIRE (Built-in!)                                   │
+│                                                                              │
+│   ┌─────────────┐   K8s SA Token (OIDC!)   ┌─────────────────┐              │
+│   │   Pod       │ ───────────────────────► │   SPIRE Agent   │              │
+│   │             │                          │                 │              │
+│   │             │ ◄─────────────────────── │ Validates K8s   │              │
+│   └─────────────┘         SVID             │ token, issues   │              │
+│                                            │ SPIFFE SVID     │              │
+│                                            └─────────────────┘              │
+│                                                                              │
+│   The Kubernetes API server IS an OIDC provider!                            │
+│   SPIRE's PSAT attestor validates K8s tokens and issues SVIDs.              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Pros:** No custom development, native SPIRE feature
+**Cons:** Only works for Kubernetes workloads, not external OIDC providers
+
+---
+
+### Summary: Choosing the Right Approach
+
+| Scenario | Recommended Option |
+|----------|-------------------|
+| SPIFFE → OIDC | Use SPIRE OIDC Discovery Provider (native) |
+| OIDC → SPIFFE (app can be modified) | **Option A** - App accepts both |
+| OIDC → SPIFFE (app cannot be modified) | **Option B** - Gateway pattern |
+| External OIDC → SPIFFE (identity conversion) | **Option C** - Token Exchange |
+| Kubernetes workloads | **Option D** - Already supported via PSAT |
+
+### Key Insight
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│   SPIFFE → OIDC:  Easy (SPIRE OIDC Discovery Provider makes it native)     │
+│                                                                              │
+│   OIDC → SPIFFE:  Requires trust configuration + custom integration         │
+│                                                                              │
+│   The asymmetry exists because:                                              │
+│   • SPIFFE identities are issued via attestation (no secrets)              │
+│   • OIDC tokens require explicit trust + credential management              │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Troubleshooting
 
 ### OIDC Discovery Provider Returns 404 at Root
