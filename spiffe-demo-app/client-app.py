@@ -19,7 +19,7 @@ except ImportError:
 app = Flask(__name__)
 
 # Configuration
-API_SERVER_URL = os.environ.get('API_SERVER_URL', 'http://spiffe-api-server.spiffe-demo.svc:8080')
+API_SERVER_URL = os.environ.get('API_SERVER_URL', 'http://unified-api.spiffe-demo.svc:8080')
 SPIFFE_ENDPOINT_SOCKET = os.environ.get('SPIFFE_ENDPOINT_SOCKET', 'unix:///run/spire/sockets/spire-agent.sock')
 
 def get_jwt_svid(audience):

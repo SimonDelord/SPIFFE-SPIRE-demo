@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements-api.txt requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY unified-api.py app.py
+
+EXPOSE 8080
+
+USER 1001
+
+CMD ["python", "app.py"]

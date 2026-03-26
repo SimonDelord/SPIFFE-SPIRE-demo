@@ -1,34 +1,36 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: spiffe-client-app
+  name: unified-api
   namespace: spiffe-demo
   labels:
-    app: spiffe-client-app
+    app: unified-api
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: spiffe-client-app
+      app: unified-api
   template:
     metadata:
       labels:
-        app: spiffe-client-app
+        app: unified-api
     spec:
-      serviceAccountName: spiffe-client-app
+      serviceAccountName: unified-api
       containers:
-      - name: client-app
-        image: image-registry.openshift-image-registry.svc:5000/spiffe-demo/spiffe-client-app:latest
+      - name: unified-api
+        image: image-registry.openshift-image-registry.svc:5000/spiffe-demo/unified-api:latest
         ports:
         - containerPort: 8080
           name: http
         env:
-        - name: API_SERVER_URL
-          value: "http://unified-api.spiffe-demo.svc:8080"
-        - name: SPIFFE_ENDPOINT_SOCKET
-          value: "unix:///run/spire/sockets/spire-agent.sock"
-        - name: OIDC_ISSUER
+        - name: KEYCLOAK_ISSUER
+          value: "https://keycloak-keycloak.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/realms/demo"
+        - name: KEYCLOAK_JWKS_URI
+          value: "https://keycloak-keycloak.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/realms/demo/protocol/openid-connect/certs"
+        - name: SPIRE_ISSUER
           value: "https://oidc-discovery.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com"
+        - name: SPIRE_JWKS_URI
+          value: "https://oidc-discovery.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/keys"
         resources:
           requests:
             memory: "128Mi"
@@ -56,12 +58,3 @@ spec:
           runAsNonRoot: true
           seccompProfile:
             type: RuntimeDefault
-        volumeMounts:
-        - name: spiffe-workload-api
-          mountPath: /run/spire/sockets
-          readOnly: true
-      volumes:
-      - name: spiffe-workload-api
-        csi:
-          driver: csi.spiffe.io
-          readOnly: true

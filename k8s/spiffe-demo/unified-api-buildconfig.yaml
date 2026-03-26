@@ -1,0 +1,19 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: unified-api
+  namespace: spiffe-demo
+  labels:
+    app: unified-api
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: unified-api:latest
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile.unified
+  triggers: []

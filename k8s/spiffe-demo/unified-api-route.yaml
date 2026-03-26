@@ -1,0 +1,17 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: unified-api
+  namespace: spiffe-demo
+  labels:
+    app: unified-api
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  to:
+    kind: Service
+    name: unified-api
+    weight: 100
+  port:
+    targetPort: http
