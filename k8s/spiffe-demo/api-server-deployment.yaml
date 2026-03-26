@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spiffe-api-server
+  namespace: spiffe-demo
+  labels:
+    app: spiffe-api-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spiffe-api-server
+  template:
+    metadata:
+      labels:
+        app: spiffe-api-server
+    spec:
+      serviceAccountName: spiffe-api-server
+      containers:
+      - name: api-server
+        image: image-registry.openshift-image-registry.svc:5000/spiffe-demo/spiffe-api-server:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: OIDC_ISSUER
+          value: "https://oidc-discovery.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault

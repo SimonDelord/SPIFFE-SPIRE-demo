@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: spiffe-api-server
+  namespace: spiffe-demo
+  labels:
+    app: spiffe-api-server
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  selector:
+    app: spiffe-api-server
+  type: ClusterIP

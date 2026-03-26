@@ -1,0 +1,17 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: spiffe-api-server
+  namespace: spiffe-demo
+  labels:
+    app: spiffe-api-server
+spec:
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  to:
+    kind: Service
+    name: spiffe-api-server
+    weight: 100
+  port:
+    targetPort: http

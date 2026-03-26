@@ -1,0 +1,10 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: spiffe-api-server
+  namespace: spiffe-demo
+  labels:
+    app: spiffe-api-server
+spec:
+  lookupPolicy:
+    local: true

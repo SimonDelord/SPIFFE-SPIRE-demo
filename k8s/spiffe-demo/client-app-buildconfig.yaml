@@ -1,0 +1,19 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spiffe-client-app
+  namespace: spiffe-demo
+  labels:
+    app: spiffe-client-app
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: spiffe-client-app:latest
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile.client
+  triggers: []
