@@ -364,7 +364,84 @@ oc apply -f k8s/spiffe-demo/clusterspiffeid.yaml
 
 ---
 
-## Part 4: Integration Scenarios
+## Part 4: Unified API (Multi-Issuer OIDC)
+
+This demo shows an API that trusts **multiple OIDC issuers** - both Keycloak and SPIRE:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Unified API Server                                 │
+│                                                                              │
+│   Trusted Issuers:                                                          │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │ 1. Keycloak (Human users + M2M client credentials)                  │   │
+│   │ 2. SPIRE OIDC Discovery (Workload identities via JWT-SVID)         │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└───────────────────────────────▲──────────────────────▲──────────────────────┘
+                                │                      │
+          ┌─────────────────────┘                      └─────────────────────┐
+          │                                                                  │
+    Keycloak Token                                               JWT-SVID    │
+    (human or M2M)                                         (workload identity)
+          │                                                                  │
+┌─────────┴─────────┐                                        ┌───────────────┴───┐
+│   Human User or   │                                        │   SPIFFE Client   │
+│   M2M Service     │                                        │   Workload        │
+└───────────────────┘                                        └───────────────────┘
+```
+
+### Deploy the Unified API
+
+```bash
+# Deploy Unified API (already includes K8s manifests)
+oc apply -f k8s/spiffe-demo/unified-api-serviceaccount.yaml
+oc apply -f k8s/spiffe-demo/unified-api-imagestream.yaml
+oc apply -f k8s/spiffe-demo/unified-api-buildconfig.yaml
+
+# Build
+oc start-build unified-api --from-dir=spiffe-demo-app -n spiffe-demo --follow
+
+# Deploy
+oc apply -f k8s/spiffe-demo/unified-api-deployment.yaml
+oc apply -f k8s/spiffe-demo/unified-api-service.yaml
+oc apply -f k8s/spiffe-demo/unified-api-route.yaml
+```
+
+### Test All Three Authentication Methods
+
+**1. Human User via Keycloak (browser login)**
+- Visit the demo-app and login with testuser
+- The ID token can be used to call the Unified API
+
+**2. M2M via Keycloak (client credentials - requires secret)**
+```bash
+# Get token using client_id and client_secret
+TOKEN=$(curl -s -X POST "https://<keycloak-url>/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=m2m-client" \
+  -d "client_secret=m2m-secret-12345" | jq -r '.access_token')
+
+# Call Unified API
+curl -H "Authorization: Bearer $TOKEN" https://<unified-api-url>/api/protected
+```
+
+**3. SPIFFE Workload (no secrets needed)**
+- Visit the SPIFFE Client App
+- Click "Call Protected API"
+- The workload gets a JWT-SVID from SPIRE and calls the Unified API
+
+### Key Insight
+
+| Method | Credentials | Rotation |
+|--------|-------------|----------|
+| **Human (Keycloak)** | Username/password | Manual re-login |
+| **M2M (Keycloak)** | client_id + client_secret | Must rotate secrets |
+| **SPIFFE (SPIRE)** | None - attestation based | Automatic (seconds) |
+
+---
+
+## Part 5: Integration Scenarios
 
 ### Scenario 1: User + Workload Identity
 
