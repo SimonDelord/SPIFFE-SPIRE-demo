@@ -627,6 +627,170 @@ If your OIDC client is a Kubernetes workload, SPIRE already does this!
 
 ---
 
+## Part 7: mTLS Between OIDC and SPIFFE Applications
+
+### The Challenge
+
+When App A (OIDC) wants to establish mTLS with App B (SPIFFE), there's a fundamental mismatch:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         The Mismatch                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   OIDC (App A)                          SPIFFE (App B)                       │
+│   ────────────                          ─────────────                        │
+│   • Identity = JWT tokens               • Identity = X.509-SVIDs             │
+│   • Works at Application Layer          • Works at Transport Layer           │
+│   • Passed in HTTP headers              • Used in TLS handshake              │
+│   • No certificate for mTLS!            • Certificate-based mTLS             │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**The problem:** mTLS requires **both sides to present X.509 certificates**. OIDC doesn't give App A a certificate - it gives a JWT token.
+
+### How mTLS Works
+
+```
+   Client (App A)                              Server (App B)
+       │                                             │
+       │──────── 1. ClientHello ───────────────────►│
+       │                                             │
+       │◄─────── 2. ServerHello + Server Cert ──────│
+       │              + CertificateRequest           │
+       │                                             │
+       │──────── 3. Client Cert + KeyExchange ─────►│
+       │                                             │
+       │         4. Both verify certificates         │
+       │                                             │
+       │◄═══════ 5. Encrypted Connection ══════════►│
+
+   ⚠️  App A needs a certificate! OIDC tokens won't work here.
+```
+
+### Solution 1: Sidecar/Proxy Pattern (Recommended)
+
+App A uses a SPIFFE-enabled sidecar (like Envoy) that handles mTLS:
+
+```
+┌─────────────────────────────────┐           ┌─────────────────────────┐
+│         App A's Pod             │           │       App B's Pod       │
+│                                 │           │                         │
+│  ┌─────────┐    ┌────────────┐  │           │  ┌────────────────────┐ │
+│  │  App A  │───►│   Envoy    │  │           │  │      App B         │ │
+│  │ (OIDC)  │    │  Sidecar   │══╬══ mTLS ══╬══│    (SPIFFE)        │ │
+│  │         │    │ (SPIFFE)   │  │           │  │                    │ │
+│  └─────────┘    └────────────┘  │           │  └────────────────────┘ │
+│                      │          │           │           │             │
+│                 X.509-SVID      │           │      X.509-SVID        │
+│                 from SPIRE      │           │      from SPIRE        │
+└─────────────────────────────────┘           └─────────────────────────┘
+```
+
+**Flow:**
+1. App A sends request to local sidecar (localhost)
+2. Sidecar establishes mTLS with App B using its X.509-SVID
+3. App A's OIDC token can be passed in HTTP headers (optional)
+4. App B sees the sidecar's SPIFFE ID + optionally the OIDC token
+
+**This is the Istio/service mesh approach.**
+
+### Solution 2: Server-side TLS + JWT Authentication
+
+Not true mTLS, but achieves mutual authentication at different layers:
+
+```
+   App A (OIDC)                                    App B (SPIFFE)
+       │                                                │
+       │──────── 1. TLS Handshake (server cert only) ──►│
+       │              App B presents X.509-SVID         │
+       │                                                │
+       │◄═══════ 2. Encrypted TLS Connection ═════════►│
+       │                                                │
+       │──────── 3. HTTP Request ──────────────────────►│
+       │              Authorization: Bearer <OIDC JWT>  │
+       │                                                │
+       │         4. App B validates:                    │
+       │            • TLS established (server verified) │
+       │            • JWT token valid (client verified) │
+```
+
+- ⚠️ This is NOT mTLS - client isn't authenticated at TLS layer
+- ✅ But client IS authenticated via JWT at application layer
+
+### Solution 3: App A Gets a Certificate (Traditional PKI)
+
+App A obtains a certificate from a traditional CA:
+
+```
+   Traditional PKI                    SPIFFE PKI
+   ┌──────────────┐                   ┌──────────────┐
+   │  Corporate   │                   │    SPIRE     │
+   │     CA       │                   │   Server     │
+   └──────┬───────┘                   └──────┬───────┘
+          │                                  │
+          │ Certificate                      │ X.509-SVID
+          ▼                                  ▼
+   ┌─────────────┐                    ┌─────────────┐
+   │   App A     │═══════ mTLS ══════►│   App B     │
+   │  (Cert from │                    │  (SPIFFE)   │
+   │   Corp CA)  │                    │             │
+   └─────────────┘                    └─────────────┘
+```
+
+- ⚠️ App B must trust App A's CA (cross-trust configuration)
+- ⚠️ App A's cert is NOT a SPIFFE identity
+
+### Solution 4: Make App A SPIFFE-Enabled
+
+The cleanest solution - both apps use SPIFFE:
+
+```
+                          SPIRE Server
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                                 ▼
+   ┌─────────────────┐                 ┌─────────────────┐
+   │     App A       │                 │     App B       │
+   │  (Now SPIFFE!)  │═════ mTLS ═════►│   (SPIFFE)      │
+   │                 │                 │                 │
+   │  X.509-SVID     │                 │  X.509-SVID     │
+   └─────────────────┘                 └─────────────────┘
+```
+
+- ✅ True mTLS with SPIFFE on both sides
+- ✅ No secrets to manage
+- ✅ Automatic certificate rotation
+
+### mTLS Solution Summary
+
+| Approach | mTLS? | Complexity | Best For |
+|----------|-------|------------|----------|
+| **Sidecar/Proxy** | ✅ Yes | Medium | Service mesh environments |
+| **TLS + JWT** | ❌ No (server TLS only) | Low | Quick integration |
+| **Traditional PKI** | ✅ Yes | High | Legacy environments |
+| **Both SPIFFE** | ✅ Yes | Low | Greenfield, full SPIFFE adoption |
+
+### Key Insight: Layer Mismatch
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│   OIDC = Application Layer Identity (JWT in HTTP headers)                   │
+│   SPIFFE = Transport Layer Identity (X.509 in TLS handshake)                │
+│                                                                              │
+│   For TRUE mTLS, you need certificates on both sides.                       │
+│   OIDC tokens cannot participate in TLS handshakes.                         │
+│                                                                              │
+│   The sidecar pattern bridges this gap by giving OIDC apps                  │
+│   a SPIFFE identity at the network layer.                                   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Troubleshooting
 
 ### OIDC Discovery Provider Returns 404 at Root
