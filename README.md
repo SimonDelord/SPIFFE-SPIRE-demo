@@ -739,7 +739,9 @@ App A obtains a certificate from a traditional CA:
    └─────────────┘                    └─────────────┘
 ```
 
-- ⚠️ App B must trust App A's CA (cross-trust configuration)
+- ⚠️ App B must trust App A's CA (to verify App A's certificate)
+- ⚠️ App A must trust App B's CA/SPIRE trust bundle (to verify App B's certificate)
+- ⚠️ This requires cross-trust configuration between both PKIs
 - ⚠️ App A's cert is NOT a SPIFFE identity
 
 ### Solution 4: Make App A SPIFFE-Enabled
