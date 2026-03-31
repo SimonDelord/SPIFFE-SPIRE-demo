@@ -9,6 +9,7 @@ This document provides detailed technical explanations of the network stacks and
 1. [TLS vs mTLS Network Stack](#tls-vs-mtls-network-stack)
 2. [OAuth 2.0 / OIDC Stack](#oauth-20--oidc-stack)
 3. [Where Identity Lives in the Stack](#where-identity-lives-in-the-stack)
+4. [Why Add OIDC/OAuth on Top of TLS?](#why-add-oidcoauth-on-top-of-tls)
 
 ---
 
@@ -443,6 +444,137 @@ OAuth/OIDC operates at the **Application Layer** - it doesn't participate in TLS
 | **OAuth 2.0** | Client (app) | Application (L7) | Access Token | API authorization |
 | **OIDC** | User + Client | Application (L7) | JWT ID Token | User authentication |
 | **SPIFFE** | Workload | Transport (L5) | X.509-SVID or JWT-SVID | Zero Trust workloads |
+
+---
+
+## Why Add OIDC/OAuth on Top of TLS?
+
+A common question: **If TLS already has authentication, why do we need OAuth/OIDC on top?**
+
+### TLS Only Authenticates the Server (by default)
+
+```
+Standard TLS (what 99% of HTTPS uses):
+
+   Browser                                    Website
+      │                                          │
+      │◄──────── Server Certificate ─────────────│  ✅ Server proves identity
+      │                                          │
+      │   "I know I'm talking to amazon.com"     │
+      │   "But amazon.com has NO IDEA who I am"  │  ❌ Client is anonymous
+```
+
+When you visit `https://amazon.com`, TLS proves you're talking to the real Amazon. But Amazon doesn't know if you're John, Jane, or a bot.
+
+### mTLS Could Authenticate Clients, But...
+
+Even if we used mTLS (client certificates), it has serious limitations for **human users**:
+
+| Challenge | Why It's a Problem |
+|-----------|-------------------|
+| **Certificate Provisioning** | How do you give every user a certificate? Install it on every device? |
+| **User Experience** | "Please select your certificate" dialogs are confusing |
+| **Multi-device** | User has phone, laptop, tablet - separate certs for each? |
+| **Revocation** | Fired an employee? Revoking certs across all their devices is hard |
+| **No Attributes** | Certificate says "CN=John" but not his email, roles, department, permissions |
+| **No Delegation** | Can't say "let this app access my photos but not my email" |
+| **No SSO** | Each app needs to trust each certificate separately |
+| **Logout** | How do you "log out" of a certificate? You can't. |
+
+### What TLS Authentication Actually Proves
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  What TLS Certificate Proves                                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ✅ "This entity possesses the private key for this cert"       │
+│  ✅ "This cert was issued by a trusted CA"                      │
+│  ✅ "This cert hasn't expired"                                  │
+│                                                                  │
+│  ❌ "This is user John Smith"                    (identity)     │
+│  ❌ "John is an admin"                           (role)         │
+│  ❌ "John can access project X"                  (permission)   │
+│  ❌ "John works in Engineering dept"             (attribute)    │
+│  ❌ "This app can read John's calendar"          (delegation)   │
+│  ❌ "John logged in 5 minutes ago"               (session)      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why OAuth/OIDC on Top of TLS
+
+OAuth/OIDC solves **different problems** at a **different layer**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│   Layer 7 (Application)     OAuth/OIDC                          │
+│   ─────────────────────     ──────────                          │
+│                                                                  │
+│   WHO is this?              → User identity (sub: "user-123")   │
+│   WHAT can they do?         → Scopes (read:photos, write:posts) │
+│   WHAT are their attributes?→ Claims (name, email, roles)       │
+│   HOW LONG is this valid?   → Token expiry (short-lived)        │
+│   CAN they delegate?        → Yes (OAuth is designed for this)  │
+│   CAN they log out?         → Yes (revoke tokens)               │
+│   Single Sign-On?           → Yes (one IdP, many apps)          │
+│                                                                  │
+│   ─────────────────────────────────────────────────────────────  │
+│                                                                  │
+│   Layer 5 (TLS)             Certificate Authentication          │
+│   ─────────────────         ──────────────────────              │
+│                                                                  │
+│   Is the connection secure? → Yes (encryption)                  │
+│   Is the server authentic?  → Yes (server cert validation)      │
+│   Is the client authentic?  → Only with mTLS (rare for humans)  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Real-World Example: Logging into Spotify with Google
+
+```
+With ONLY TLS (hypothetical):
+─────────────────────────────
+1. You'd need a client certificate
+2. Spotify would need to trust Google's CA
+3. Google would need to issue you a certificate
+4. That cert would need to contain your permissions for Spotify
+5. Every time permissions change, new cert needed
+6. Can't revoke access without revoking entire cert
+
+With OAuth/OIDC (how it actually works):
+────────────────────────────────────────
+1. Spotify redirects you to Google
+2. You log in with password/2FA (Google's choice)
+3. Google asks "Let Spotify see your name and email?"
+4. You click "Allow"
+5. Spotify gets a token with ONLY the info you approved
+6. Token expires in 1 hour
+7. You can revoke Spotify's access anytime in Google settings
+8. No certificates involved for the user
+```
+
+### When to Use What
+
+| Use Case | Solution |
+|----------|----------|
+| Human users logging into web apps | **OIDC** (on top of TLS) |
+| Human users on internal corporate apps | **OIDC** or SAML (on top of TLS) |
+| Service-to-service (machines) | **mTLS/SPIFFE** or OAuth Client Credentials |
+| Zero Trust workload identity | **SPIFFE/SPIRE with mTLS** |
+| APIs accessed by 3rd party apps | **OAuth 2.0** (on top of TLS) |
+| High-security internal microservices | **SPIFFE mTLS** (both sides) |
+
+### Summary: TLS and OAuth/OIDC are Complementary
+
+TLS and OAuth/OIDC are **complementary**, not competing:
+
+- **TLS** = Secure the pipe (encryption + server authentication)
+- **OAuth/OIDC** = Identify who's using the pipe and what they can do
+
+This is why SPIFFE is powerful for **machines** (where mTLS makes sense) while OIDC remains dominant for **humans** (where usability matters).
 
 ---
 
