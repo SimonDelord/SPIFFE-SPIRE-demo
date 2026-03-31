@@ -12,6 +12,7 @@ This document provides detailed technical explanations of the network stacks and
 4. [Why Add OIDC/OAuth on Top of TLS?](#why-add-oidcoauth-on-top-of-tls)
 5. [OAuth 2.0 / OIDC Sessions](#oauth-20--oidc-sessions)
 6. [Multiple OIDC Users on One TLS Connection](#multiple-oidc-users-on-one-tls-connection)
+7. [Authentication Methods Beyond HTTP/TLS](#authentication-methods-beyond-httptls)
 
 ---
 
@@ -940,6 +941,275 @@ With mTLS, the **client certificate** is tied to the connection, not the request
 | Use case | Machine-to-machine | Human users, shared infrastructure |
 
 **Key insight**: OIDC's "identity in the request header" design is what enables modern architectures with load balancers, API gateways, CDNs, and connection pooling - where many users' requests flow through shared connections.
+
+---
+
+## Authentication Methods Beyond HTTP/TLS
+
+Not all applications use HTTP or standard TLS authentication. Here's an overview of other authentication mechanisms.
+
+### Database Authentication
+
+Databases typically run on custom protocols (not HTTP) with their own auth mechanisms:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      Database Authentication Methods                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌──────────────┐                              ┌──────────────────┐        │
+│   │   Client     │ ════ TCP (port 5432) ═══════►│   PostgreSQL     │        │
+│   │   App        │                              │   Database       │        │
+│   └──────────────┘                              └──────────────────┘        │
+│                                                                              │
+│   Authentication happens INSIDE the protocol, not at TLS layer              │
+│                                                                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Method              │ How It Works                                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Password            │ Username + password sent (often hashed)              │
+│  SCRAM-SHA-256       │ Challenge-response, password never sent              │
+│  Certificate (mTLS)  │ Client presents X.509 cert during TLS handshake      │
+│  Kerberos/GSSAPI     │ Kerberos ticket from KDC                             │
+│  LDAP                │ Validates against LDAP/Active Directory              │
+│  PAM                 │ Pluggable modules (can chain auth methods)           │
+│  Trust               │ Trust based on IP address or hostname (dangerous!)   │
+│  Ident               │ Maps OS username to DB username                      │
+│  RADIUS              │ External RADIUS server                               │
+│  IAM (Cloud)         │ AWS/GCP IAM roles → short-lived credentials          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### PostgreSQL Example (pg_hba.conf)
+
+```
+# TYPE  DATABASE  USER        ADDRESS          METHOD
+─────────────────────────────────────────────────────────────────
+host    all       all         10.0.0.0/8       scram-sha-256    # Password
+hostssl all       all         0.0.0.0/0        cert             # mTLS
+host    all       admin       192.168.1.0/24   gss              # Kerberos
+host    all       readonly    127.0.0.1/32     trust            # No auth!
+```
+
+### SASL (Simple Authentication and Security Layer)
+
+Many non-HTTP protocols use SASL as an abstraction layer:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                               SASL Framework                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Protocols that use SASL:                                                   │
+│   • LDAP                    • Kafka                                         │
+│   • SMTP/IMAP              • MongoDB                                        │
+│   • AMQP (RabbitMQ)        • Memcached                                      │
+│   • XMPP                   • Cassandra                                      │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                         Application Protocol                         │   │
+│   │                     (Kafka, LDAP, SMTP, etc.)                       │   │
+│   ├─────────────────────────────────────────────────────────────────────┤   │
+│   │                              SASL                                    │   │
+│   ├──────────┬──────────┬──────────┬──────────┬──────────┬─────────────┤   │
+│   │  PLAIN   │  SCRAM   │ GSSAPI   │ EXTERNAL │  OAUTHBEARER  │  ...   │   │
+│   │(password)│(SHA-256) │(Kerberos)│  (cert)  │   (OAuth)     │        │   │
+│   └──────────┴──────────┴──────────┴──────────┴──────────┴─────────────┘   │
+│                                                                              │
+│   SASL allows protocols to support multiple auth mechanisms                 │
+│   without changing the protocol itself                                       │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kerberos (Network Authentication)
+
+Used heavily in enterprise environments:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Kerberos Authentication                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│                         ┌─────────────────┐                                  │
+│                         │       KDC       │                                  │
+│                         │ (Key Distribution│                                 │
+│                         │     Center)     │                                  │
+│                         └────────┬────────┘                                  │
+│                                  │                                           │
+│            ┌─────────────────────┼─────────────────────┐                    │
+│            │                     │                     │                    │
+│            ▼                     ▼                     ▼                    │
+│   1. Get TGT            2. Get Service           3. Present               │
+│   (Ticket Granting      Ticket for DB            Ticket to DB              │
+│    Ticket)                                                                  │
+│                                                                              │
+│   ┌──────────┐                                   ┌──────────┐              │
+│   │  Client  │══════════════════════════════════►│ Database │              │
+│   │          │  Present Kerberos Service Ticket  │ (port    │              │
+│   │          │  (no password sent!)              │  5432)   │              │
+│   └──────────┘                                   └──────────┘              │
+│                                                                              │
+│   ✅ Password never sent over network                                       │
+│   ✅ Single Sign-On across services                                         │
+│   ✅ Time-limited tickets                                                   │
+│   ⚠️ Complex infrastructure (KDC required)                                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Message Queue Authentication
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      Message Queue Authentication                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Apache Kafka (port 9092/9093):                                            │
+│   ├── SASL/PLAIN (username/password)                                        │
+│   ├── SASL/SCRAM-SHA-256                                                    │
+│   ├── SASL/GSSAPI (Kerberos)                                                │
+│   ├── SASL/OAUTHBEARER (OAuth 2.0 tokens!)                                  │
+│   └── SSL/mTLS (certificate-based)                                          │
+│                                                                              │
+│   RabbitMQ (port 5672):                                                     │
+│   ├── PLAIN (username/password)                                             │
+│   ├── AMQPLAIN                                                              │
+│   ├── EXTERNAL (x509 certificate CN)                                        │
+│   └── LDAP backend                                                          │
+│                                                                              │
+│   Redis (port 6379):                                                        │
+│   ├── AUTH command (password only, pre-6.0)                                │
+│   ├── ACL (username + password, 6.0+)                                       │
+│   └── TLS client certificates                                               │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### SSH Authentication
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SSH Authentication (port 22)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Methods (in typical priority order):                                       │
+│                                                                              │
+│   1. Public Key Authentication                                               │
+│      ┌─────────┐                           ┌─────────┐                      │
+│      │ Client  │──── Public Key ──────────►│ Server  │                      │
+│      │ (has    │◄─── Challenge ────────────│(has     │                      │
+│      │ private │──── Signed Response ─────►│ public  │                      │
+│      │ key)    │                           │ key)    │                      │
+│      └─────────┘                           └─────────┘                      │
+│                                                                              │
+│   2. Certificate Authentication (SSH CA)                                     │
+│      Similar to X.509, but SSH-specific certificate format                  │
+│                                                                              │
+│   3. GSSAPI/Kerberos                                                        │
+│      Use existing Kerberos ticket                                           │
+│                                                                              │
+│   4. Password                                                                │
+│      Simple but less secure                                                  │
+│                                                                              │
+│   5. Keyboard-Interactive                                                    │
+│      Multi-factor, prompts (like 2FA codes)                                 │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Cloud IAM Authentication
+
+Modern approach - use cloud IAM instead of static credentials:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Cloud IAM Database Authentication                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   AWS RDS IAM Authentication:                                                │
+│                                                                              │
+│   ┌──────────┐      1. Get IAM credentials      ┌─────────────┐            │
+│   │   App    │◄─────────────────────────────────│  AWS IAM    │            │
+│   │ (EC2/EKS)│      (from instance role)        │             │            │
+│   └────┬─────┘                                  └─────────────┘            │
+│        │                                                                     │
+│        │ 2. Generate auth token (valid 15 min)                              │
+│        │    aws rds generate-db-auth-token                                  │
+│        │                                                                     │
+│        ▼                                                                     │
+│   ┌──────────┐      3. Connect with token      ┌─────────────┐             │
+│   │   App    │═══════════════════════════════►│  RDS MySQL  │             │
+│   │          │      (as password)              │  /PostgreSQL│             │
+│   └──────────┘                                 └─────────────┘             │
+│                                                                              │
+│   ✅ No static passwords                                                     │
+│   ✅ Short-lived tokens (15 minutes)                                        │
+│   ✅ Tied to IAM role/policy                                                │
+│   ✅ Auditable via CloudTrail                                               │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Network-Level Authentication
+
+Authentication before application layer:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      Network-Level Authentication                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   IPsec:                                                                     │
+│   • Pre-shared keys (PSK)                                                   │
+│   • X.509 certificates                                                      │
+│   • IKEv2 with EAP                                                          │
+│                                                                              │
+│   WireGuard:                                                                 │
+│   • Curve25519 key pairs                                                    │
+│   • No usernames, just public keys                                          │
+│                                                                              │
+│   802.1X (Port-based Network Access):                                       │
+│   • EAP-TLS (certificates)                                                  │
+│   • EAP-PEAP (password inside TLS tunnel)                                   │
+│   • Used for WiFi and wired network access                                  │
+│                                                                              │
+│   These authenticate at Layer 2-4, BEFORE any application protocol          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Authentication Method Comparison
+
+| Method | Layer | Secrets | Rotation | Use Case |
+|--------|-------|---------|----------|----------|
+| **Password** | App | Static secret | Manual | Simple apps |
+| **SCRAM** | App | Password (hashed) | Manual | Databases |
+| **mTLS/Certs** | Transport | Private key | Auto possible | Service-to-service |
+| **Kerberos** | App | Tickets | Auto (24h) | Enterprise SSO |
+| **SSH Keys** | App | Private key | Manual | Server access |
+| **OAuth/OIDC** | App (HTTP) | Tokens | Auto (short-lived) | APIs, web apps |
+| **SASL/OAUTHBEARER** | App | OAuth tokens | Auto | Kafka, modern systems |
+| **Cloud IAM** | App | IAM tokens | Auto (15 min) | Cloud databases |
+| **SPIFFE** | Transport | X.509-SVID | Auto (hours) | Zero Trust workloads |
+| **IPsec/WireGuard** | Network | Keys/PSK | Manual/Auto | VPN, network security |
+
+### Where SPIFFE Fits In
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  SPIFFE can integrate with many of these!                       │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  • Database mTLS: Use X.509-SVID as client certificate          │
+│  • Kafka: SASL/OAUTHBEARER with JWT-SVID                        │
+│  • Cloud IAM: Federate JWT-SVID → AWS STS AssumeRoleWithWebIdentity
+│  • Vault: Use SPIFFE auth method                                │
+│  • Service mesh: Automatic mTLS between all services            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
