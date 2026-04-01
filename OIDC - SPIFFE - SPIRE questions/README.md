@@ -14,6 +14,7 @@ This document provides detailed technical explanations of the network stacks and
 6. [Multiple OIDC Users on One TLS Connection](#multiple-oidc-users-on-one-tls-connection)
 7. [Authentication Methods Beyond HTTP/TLS](#authentication-methods-beyond-httptls)
 8. [SPIFFE/SPIRE Authentication: mTLS vs JWT-SVID](#spiffespire-authentication-mtls-vs-jwt-svid)
+9. [SPIFFE Certificate Lifetimes and CA Rotation](#spiffe-certificate-lifetimes-and-ca-rotation)
 
 ---
 
@@ -1393,6 +1394,300 @@ The answer: **mTLS is ONE of the authentication methods**, but not the only one.
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## SPIFFE Certificate Lifetimes and CA Rotation
+
+A common question: **SPIFFE uses short-lived certificates - how do non-SPIFFE apps trust a CA that rotates frequently?**
+
+### SPIFFE Certificate Lifetimes
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                Traditional PKI vs SPIFFE Certificate Lifetimes               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Traditional PKI:                                                           │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │                                                                       │  │
+│   │   Certificate issued ─────────────────────────────────────► Expires  │  │
+│   │   Jan 2024                      1-2 YEARS                   Jan 2026 │  │
+│   │                                                                       │  │
+│   │   ⚠️ If compromised, attacker has access for months/years            │  │
+│   │   ⚠️ Need CRL/OCSP infrastructure for revocation                     │  │
+│   │   ⚠️ Manual rotation process                                          │  │
+│   │                                                                       │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+│   SPIFFE/SPIRE:                                                             │
+│   ┌──────────────────────────────────────────────────────────────────────┐  │
+│   │                                                                       │  │
+│   │   │←─ 1 HOUR ─→│←─ 1 HOUR ─→│←─ 1 HOUR ─→│←─ 1 HOUR ─→│             │  │
+│   │   ████████████ ████████████ ████████████ ████████████              │  │
+│   │   ↑            ↑            ↑            ↑                          │  │
+│   │   Auto-issued  Auto-rotate  Auto-rotate  Auto-rotate               │  │
+│   │                                                                       │  │
+│   │   ✅ If compromised, attacker has access for ~1 hour max             │  │
+│   │   ✅ No CRL/OCSP needed - just wait for expiry                       │  │
+│   │   ✅ Fully automatic rotation                                         │  │
+│   │                                                                       │  │
+│   └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Default SPIFFE/SPIRE Lifetimes
+
+| Component | Default TTL | Configurable? |
+|-----------|-------------|---------------|
+| **X.509-SVID** | 1 hour | Yes |
+| **JWT-SVID** | 5 minutes | Yes |
+| **CA Certificate** | 24 hours | Yes |
+
+### The Problem: Non-SPIFFE Apps Trusting SPIFFE CA
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         The CA Rotation Challenge                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   SPIFFE Environment                      Non-SPIFFE App (e.g., PostgreSQL) │
+│                                                                              │
+│   ┌─────────────────┐                     ┌─────────────────┐               │
+│   │   SPIRE Server  │                     │   PostgreSQL    │               │
+│   │                 │                     │                 │               │
+│   │   CA rotates    │                     │   ssl_ca_file   │               │
+│   │   every 24h     │                     │   = ???         │               │
+│   └────────┬────────┘                     │                 │               │
+│            │                              │   How does it   │               │
+│            │ Issues SVIDs                 │   get new CA?   │               │
+│            ▼                              │                 │               │
+│   ┌─────────────────┐                     └────────┬────────┘               │
+│   │   Workload      │══════════ mTLS ════════════►│                         │
+│   │   (SVID)        │                              │                         │
+│   └─────────────────┘                              │                         │
+│                                                    ▼                         │
+│                                           ❌ CA mismatch!                    │
+│                                           Connection fails!                  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Solution 1: Long-Lived Root CA (Recommended)
+
+SPIRE uses a **CA hierarchy** - the root can be long-lived while intermediates rotate:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         CA Hierarchy in SPIRE                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                         Root CA                                      │   │
+│   │                    (TTL: 1 year or more)                            │   │
+│   │                                                                      │   │
+│   │   This is what external systems trust!                              │   │
+│   │   Doesn't rotate frequently.                                         │   │
+│   └────────────────────────────┬────────────────────────────────────────┘   │
+│                                │                                             │
+│                                │ Signs                                       │
+│                                ▼                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                     Intermediate CA                                  │   │
+│   │                      (TTL: 24 hours)                                │   │
+│   │                                                                      │   │
+│   │   This rotates frequently.                                          │   │
+│   │   But it's signed by the Root CA!                                   │   │
+│   └────────────────────────────┬────────────────────────────────────────┘   │
+│                                │                                             │
+│                                │ Signs                                       │
+│                                ▼                                             │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                      Workload SVIDs                                  │   │
+│   │                       (TTL: 1 hour)                                 │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   External apps trust the ROOT CA → which validates the entire chain!      │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### SPIRE Configuration for Long-Lived Root CA
+
+```hcl
+# SPIRE Server configuration
+server {
+    trust_domain = "example.com"
+    
+    # Root CA - long-lived (external systems trust this)
+    ca_ttl = "8760h"  # 1 year
+    
+    # SVIDs - short-lived
+    default_x509_svid_ttl = "1h"
+}
+```
+
+Or use an **UpstreamAuthority plugin** with an external CA:
+
+```hcl
+UpstreamAuthority "disk" {
+    plugin_data {
+        # Long-lived root CA from your existing PKI
+        cert_file_path = "/path/to/root-ca.crt"
+        key_file_path = "/path/to/root-ca.key"
+    }
+}
+```
+
+### Solution 2: SPIRE Bundle Endpoint
+
+SPIRE can expose an HTTP endpoint that serves the current trust bundle:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SPIRE Bundle Endpoint                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   SPIRE Server exposes:                                                      │
+│   https://spire-server:8443/bundle                                          │
+│                                                                              │
+│   Returns PEM-encoded CA certificates (trust bundle)                        │
+│                                                                              │
+│   ┌─────────────────┐     Poll every      ┌─────────────────┐               │
+│   │   SPIRE Server  │     few hours       │   Sidecar /     │               │
+│   │                 │◄────────────────────│   CronJob       │               │
+│   │   /bundle       │                     │                 │               │
+│   └─────────────────┘                     │   Updates       │               │
+│                                           │   PostgreSQL's  │               │
+│                                           │   ssl_ca_file   │               │
+│                                           └────────┬────────┘               │
+│                                                    │                         │
+│                                                    ▼                         │
+│                                           ┌─────────────────┐               │
+│                                           │   PostgreSQL    │               │
+│                                           │   (reloads CA)  │               │
+│                                           └─────────────────┘               │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Solution 3: Trust Bundle Distribution
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Trust Bundle Distribution Options                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Option A: Kubernetes ConfigMap (for K8s workloads)                        │
+│   ─────────────────────────────────────────────────                         │
+│                                                                              │
+│   SPIRE Server ──► ConfigMap ──► Pod Volume Mount ──► App reads CA         │
+│                    (auto-updated)                                           │
+│                                                                              │
+│   ─────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│   Option B: spiffe-helper sidecar                                           │
+│   ───────────────────────────────                                           │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Pod                                                                 │   │
+│   │  ┌─────────────────┐    ┌──────────────────────────────────────┐   │   │
+│   │  │  spiffe-helper  │───►│  /shared/certs/ca-bundle.pem         │   │   │
+│   │  │  (sidecar)      │    │  (shared volume)                     │   │   │
+│   │  │                 │    │                                      │   │   │
+│   │  │  Watches SPIRE  │    │                                      │   │   │
+│   │  │  bundle changes │    │                                      │   │   │
+│   │  └─────────────────┘    └──────────────────────────────────────┘   │   │
+│   │                                        ▲                            │   │
+│   │  ┌─────────────────┐                  │                            │   │
+│   │  │  PostgreSQL     │──────────────────┘                            │   │
+│   │  │  (reads CA from │  ssl_ca_file = /shared/certs/ca-bundle.pem   │   │
+│   │  │   shared volume)│                                               │   │
+│   │  └─────────────────┘                                               │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   ─────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│   Option C: SPIFFE Federation API                                           │
+│   ───────────────────────────────                                           │
+│                                                                              │
+│   For cross-domain trust, SPIRE servers can federate and                   │
+│   automatically exchange trust bundles.                                     │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Solution 4: Hot-Reload Capable Applications
+
+Some applications can reload CA certificates without restart:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    Applications with CA Hot-Reload                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   PostgreSQL:     SIGHUP → reloads ssl_ca_file                              │
+│   Nginx:          nginx -s reload                                           │
+│   Envoy:          SDS (Secret Discovery Service) - native SPIFFE support   │
+│   HAProxy:        SIGUSR2 → reloads certificates                            │
+│   Apache:         Graceful restart                                          │
+│                                                                              │
+│   Automation example:                                                        │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  #!/bin/bash                                                         │   │
+│   │  # Cron job or systemd timer                                        │   │
+│   │                                                                      │   │
+│   │  # Fetch latest bundle                                              │   │
+│   │  curl -o /etc/ssl/spire-ca.pem https://spire-server:8443/bundle    │   │
+│   │                                                                      │   │
+│   │  # Signal PostgreSQL to reload                                      │   │
+│   │  pg_ctl reload -D /var/lib/postgresql/data                         │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Recommended Approach Summary
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Best Practice                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   For non-SPIFFE apps that need to trust SPIFFE workloads:                  │
+│                                                                              │
+│   1. Use a LONG-LIVED ROOT CA (1 year+)                                     │
+│      - Configure SPIRE to use UpstreamAuthority with your existing PKI     │
+│      - Or set ca_ttl to a long duration                                     │
+│      - External apps trust this stable root                                 │
+│                                                                              │
+│   2. Let intermediate CAs rotate frequently                                 │
+│      - This is internal to SPIRE                                            │
+│      - Doesn't affect external trust                                        │
+│                                                                              │
+│   3. Keep SVIDs short-lived (1 hour)                                        │
+│      - Security benefit of short-lived credentials                         │
+│      - Chain validates back to long-lived root                             │
+│                                                                              │
+│   Result:                                                                    │
+│   ┌────────────────────────────────────────────────────────────────────┐    │
+│   │  External App trusts: Root CA (1 year) ✅                          │    │
+│   │  SVID chain:          Root CA → Intermediate → SVID                │    │
+│   │  Validation:          Works because root is trusted!               │    │
+│   └────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Insight
+
+The **24-hour CA mentioned in SPIRE defaults is often an intermediate CA**, while the **root CA that external systems trust can be much longer-lived** (months or years). The certificate chain validation still works because:
+
+1. External app trusts the Root CA
+2. SVID is signed by Intermediate CA
+3. Intermediate CA is signed by Root CA
+4. Chain validates: SVID → Intermediate → Root ✅
 
 ---
 
