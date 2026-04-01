@@ -2,6 +2,27 @@
 
 A demonstration project for [SPIFFE](https://spiffe.io/) (Secure Production Identity Framework for Everyone) and [SPIRE](https://spiffe.io/docs/latest/spire-about/) (SPIFFE Runtime Environment), including integration with OIDC identity providers on OpenShift.
 
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+2. [Project Structure](#project-structure)
+3. [Prerequisites](#prerequisites)
+4. [Part 1: OIDC Demo with Keycloak](#part-1-oidc-demo-with-keycloak)
+5. [Part 2: SPIFFE/SPIRE with Zero Trust Workload Identity Manager](#part-2-spiffespire-with-zero-trust-workload-identity-manager)
+6. [Part 3: SPIFFE Workload Identity Demo](#part-3-spiffe-workload-identity-demo)
+7. [Part 4: Unified API (Multi-Issuer OIDC)](#part-4-unified-api-multi-issuer-oidc)
+8. [Part 5: Integration Scenarios](#part-5-integration-scenarios)
+9. [Part 6: Bidirectional OIDC ↔ SPIFFE Integration](#part-6-bidirectional-oidc--spiffe-integration)
+10. [Part 7: mTLS Between OIDC and SPIFFE Applications](#part-7-mtls-between-oidc-and-spiffe-applications)
+11. [Troubleshooting](#troubleshooting)
+12. [Resources](#resources)
+
+**See also:** [OIDC / SPIFFE / SPIRE - Technical Deep Dive](OIDC%20-%20SPIFFE%20-%20SPIRE%20questions/README.md) - Detailed Q&A covering TLS, mTLS, OAuth, sessions, and more.
+
+---
+
 ## Overview
 
 This project demonstrates a complete zero-trust identity architecture:
