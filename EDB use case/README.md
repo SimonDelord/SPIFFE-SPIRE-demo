@@ -1,6 +1,6 @@
 # EDB Use Case: SPIFFE X.509 Certificate Authentication with PostgreSQL
 
-This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (certificate) to authenticate to an **EDB PostgreSQL database**, with the database performing both **authentication** (certificate verification) and **authorization** (mapping certificate identity to database roles).
+This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (certificate) to authenticate to a **PostgreSQL database**, with the database performing both **authentication** (certificate verification) and **authorization** (role-based permissions).
 
 ---
 
@@ -8,14 +8,14 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 
 1. [Overview](#overview)
 2. [Architecture](#architecture)
-3. [How It Works](#how-it-works)
-4. [PostgreSQL Certificate Authentication](#postgresql-certificate-authentication)
-5. [SPIFFE Identity Mapping Options](#spiffe-identity-mapping-options)
-6. [Implementation Plan](#implementation-plan)
-7. [Prerequisites](#prerequisites)
-8. [Deployment Steps](#deployment-steps)
-9. [Testing](#testing)
-10. [Troubleshooting](#troubleshooting)
+3. [Prerequisites](#prerequisites)
+4. [File Structure](#file-structure)
+5. [Configuration Files Explained](#configuration-files-explained)
+6. [Step-by-Step Deployment](#step-by-step-deployment)
+7. [Testing the Demo](#testing-the-demo)
+8. [How It Works](#how-it-works)
+9. [Troubleshooting](#troubleshooting)
+10. [Key Learnings](#key-learnings)
 
 ---
 
@@ -25,35 +25,24 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│            SPIFFE X.509 Certificate → PostgreSQL/EDB Authentication         │
+│            SPIFFE X.509 Certificate → PostgreSQL Authentication             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   ┌─────────────────────────────────┐     ┌─────────────────────────────┐   │
-│   │  SPIFFE-Enabled App             │     │  EDB PostgreSQL             │   │
-│   │  (spiffe-demo namespace)        │     │  (edb namespace)            │   │
+│   │  SPIFFE-Enabled Client App      │     │  PostgreSQL Database        │   │
+│   │  (spiffe-edb-demo namespace)    │     │  (edb namespace)            │   │
 │   │                                 │     │                             │   │
-│   │  Gets X.509-SVID from SPIRE:    │     │  pg_hba.conf:               │   │
+│   │  Gets X.509-SVID from SPIRE:    │     │  Configured with:           │   │
 │   │  ┌───────────────────────────┐  │     │  ┌───────────────────────┐  │   │
-│   │  │ Certificate:              │  │     │  │ hostssl all all ...   │  │   │
-│   │  │   SAN: spiffe://trust-    │  │     │  │   cert clientcert=    │  │   │
-│   │  │   domain/ns/spiffe-demo/  │══╬═════╬══│   verify-full         │  │   │
-│   │  │   sa/db-client-app        │  │ mTLS│  │                       │  │   │
-│   │  │                           │  │     │  │ Extracts identity     │  │   │
-│   │  │ Private Key               │  │     │  │ from certificate      │  │   │
-│   │  └───────────────────────────┘  │     │  └───────────────────────┘  │   │
-│   │                                 │     │                             │   │
-│   └─────────────────────────────────┘     │  pg_ident.conf:             │   │
-│                                           │  ┌───────────────────────┐  │   │
-│                                           │  │ Maps SPIFFE ID to     │  │   │
-│                                           │  │ database role         │  │   │
-│                                           │  │                       │  │   │
-│                                           │  │ spiffe-map "..." app  │  │   │
-│                                           │  └───────────────────────┘  │   │
-│                                           │                             │   │
-│                                           │  Database roles:            │   │
-│                                           │  - app_read_only            │   │
-│                                           │  - app_read_write           │   │
-│                                           │  - app_admin                │   │
+│   │  │ Certificate:              │  │     │  │ • SPIRE CA trusted    │  │   │
+│   │  │   SAN: spiffe://...       │  │     │  │ • SSL required        │  │   │
+│   │  │   /ns/spiffe-edb-demo/    │══╬═════╬══│ • Client cert verify  │  │   │
+│   │  │   sa/db-client-app        │  │ mTLS│  │ • Role-based access   │  │   │
+│   │  │                           │  │     │  │                       │  │   │
+│   │  │ Private Key               │  │     │  │ Roles:                │  │   │
+│   │  └───────────────────────────┘  │     │  │ • app_readonly        │  │   │
+│   │                                 │     │  │ • app_readwrite       │  │   │
+│   └─────────────────────────────────┘     │  │ • app_admin           │  │   │
 │                                           └─────────────────────────────┘   │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -63,17 +52,24 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 
 | Benefit | Description |
 |---------|-------------|
-| **No secrets** | No database passwords to manage or rotate |
-| **Automatic rotation** | SPIFFE certificates rotate automatically (every few minutes) |
+| **No passwords** | No database passwords to manage or rotate |
+| **Automatic rotation** | SPIFFE certificates rotate automatically (every ~1 hour) |
 | **Strong identity** | Cryptographic proof of workload identity |
-| **Fine-grained authZ** | Map different SPIFFE IDs to different database roles |
-| **Audit trail** | Clear identity in database logs |
+| **Fine-grained authZ** | Different SPIFFE workloads can have different database roles |
+| **Audit trail** | Clear identity in database connection logs |
+
+### Demo Results
+
+| Test | Result |
+|------|--------|
+| SPIFFE Identity Fetch | ✅ `spiffe://apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/ns/spiffe-edb-demo/sa/db-client-app` |
+| Database Connection | ✅ Connected as `app_readonly` user |
+| SELECT Query | ✅ Success - 3 rows returned |
+| INSERT Query | ❌ Permission denied (expected - read-only role) |
 
 ---
 
 ## Architecture
-
-### Components
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -89,27 +85,22 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 │  │  │             │  │  (DaemonSet)│  │   Driver    │                  │    │
 │  │  └──────┬──────┘  └──────┬──────┘  └─────────────┘                  │    │
 │  │         │                │                                           │    │
-│  │         │  Issues SVIDs  │  Delivers to pods                        │    │
+│  │         │  Issues SVIDs  │  Delivers to pods via CSI volume         │    │
 │  │         └────────────────┘                                           │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                          │                                   │
 │                                          ▼                                   │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  spiffe-demo namespace                                               │    │
+│  │  spiffe-edb-demo namespace                                           │    │
 │  │                                                                      │    │
 │  │  ┌─────────────────────────────────────────────────────────────┐    │    │
 │  │  │  db-client-app Pod                                           │    │    │
 │  │  │                                                              │    │    │
 │  │  │  ┌──────────────────┐     ┌────────────────────────────┐    │    │    │
-│  │  │  │  Application     │     │  SPIFFE Workload API       │    │    │    │
-│  │  │  │  Container       │     │  (CSI Volume Mount)        │    │    │    │
-│  │  │  │                  │     │                            │    │    │    │
-│  │  │  │  Uses:           │◄────│  /spiffe-workload-api/     │    │    │    │
-│  │  │  │  - svid.pem      │     │    spiffe-workload-api.sock│    │    │    │
-│  │  │  │  - svid-key.pem  │     │                            │    │    │    │
-│  │  │  │  - bundle.pem    │     │  Provides:                 │    │    │    │
-│  │  │  │                  │     │  - X.509-SVID (cert+key)   │    │    │    │
-│  │  │  │                  │     │  - Trust bundle (CA certs) │    │    │    │
+│  │  │  │  Flask App       │     │  SPIFFE CSI Volume         │    │    │    │
+│  │  │  │                  │     │  /spiffe-workload-api/     │    │    │    │
+│  │  │  │  Uses X.509-SVID │◄────│    spire-agent.sock        │    │    │    │
+│  │  │  │  for DB auth     │     │                            │    │    │    │
 │  │  │  └────────┬─────────┘     └────────────────────────────┘    │    │    │
 │  │  │           │                                                  │    │    │
 │  │  └───────────┼──────────────────────────────────────────────────┘    │    │
@@ -117,26 +108,18 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 │  └──────────────┼────────────────────────────────────────────────────────┘    │
 │                 │                                                              │
 │                 │  mTLS Connection (TCP 5432)                                 │
-│                 │  Client cert: X.509-SVID                                    │
-│                 │  Server cert: EDB certificate                               │
+│                 │  Client presents X.509-SVID                                 │
 │                 ▼                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  edb namespace                                                       │    │
 │  │                                                                      │    │
 │  │  ┌─────────────────────────────────────────────────────────────┐    │    │
-│  │  │  EDB PostgreSQL Cluster                                      │    │    │
+│  │  │  PostgreSQL StatefulSet                                      │    │    │
 │  │  │                                                              │    │    │
-│  │  │  ┌─────────────────────────────────────────────────────┐    │    │    │
-│  │  │  │  PostgreSQL Server                                   │    │    │    │
-│  │  │  │                                                      │    │    │    │
-│  │  │  │  Authentication:                                     │    │    │    │
-│  │  │  │  • Verify client cert signed by trusted CA          │    │    │    │
-│  │  │  │  • Extract CN or SAN from certificate               │    │    │    │
-│  │  │  │                                                      │    │    │    │
-│  │  │  │  Authorization:                                      │    │    │    │
-│  │  │  │  • Map certificate identity to DB user/role         │    │    │    │
-│  │  │  │  • Grant appropriate permissions                     │    │    │    │
-│  │  │  └─────────────────────────────────────────────────────┘    │    │    │
+│  │  │  • Server TLS certificate (OpenShift Service CA)            │    │    │
+│  │  │  • Client CA = SPIRE CA bundle (trusts SPIFFE certs)        │    │    │
+│  │  │  • pg_hba.conf: hostssl with clientcert=verify-ca           │    │    │
+│  │  │  • Roles: app_readonly, app_readwrite, app_admin            │    │    │
 │  │  │                                                              │    │    │
 │  │  └─────────────────────────────────────────────────────────────┘    │    │
 │  │                                                                      │    │
@@ -147,514 +130,712 @@ This demo shows how a **SPIFFE-enabled application** uses its **X.509-SVID** (ce
 
 ---
 
-## How It Works
+## Prerequisites
 
-### Step-by-Step Flow
+- OpenShift cluster (tested on ROSA)
+- **SPIRE deployed** via Zero Trust Workload Identity Manager operator
+- `oc` CLI with cluster-admin access
+- The `edb` namespace must exist
+
+---
+
+## File Structure
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Certificate-Based Database Authentication                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   1. WORKLOAD ATTESTATION                                                   │
-│   ──────────────────────                                                    │
-│                                                                              │
-│   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐          │
-│   │ db-client   │  Attest │   SPIRE     │ Verify  │   SPIRE     │          │
-│   │ Pod starts  │────────►│   Agent     │────────►│   Server    │          │
-│   └─────────────┘         └─────────────┘         └─────────────┘          │
-│                                                          │                  │
-│                                                          │ Issue X.509-SVID │
-│                                                          ▼                  │
-│   SPIFFE ID: spiffe://trust-domain/ns/spiffe-demo/sa/db-client-app        │
-│                                                                              │
-│                                                                              │
-│   2. CERTIFICATE DELIVERY                                                   │
-│   ───────────────────────                                                   │
-│                                                                              │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Pod: db-client-app                                                  │   │
-│   │                                                                      │   │
-│   │  CSI Volume Mount:                                                   │   │
-│   │  /spiffe-workload-api/                                               │   │
-│   │    ├── spiffe-workload-api.sock   (Workload API socket)             │   │
-│   │    │                                                                 │   │
-│   │  Files obtained via Workload API:                                    │   │
-│   │    ├── svid.pem                   (X.509 certificate)                │   │
-│   │    ├── svid-key.pem               (Private key)                      │   │
-│   │    └── bundle.pem                 (Trust bundle/CA certs)            │   │
-│   │                                                                      │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│                                                                              │
-│   3. DATABASE CONNECTION (mTLS)                                             │
-│   ─────────────────────────────                                             │
-│                                                                              │
-│   ┌─────────────┐                                      ┌─────────────────┐  │
-│   │ db-client   │                                      │  EDB PostgreSQL │  │
-│   │             │                                      │                 │  │
-│   │  psql       │──── TLS ClientHello ────────────────►│                 │  │
-│   │  sslmode=   │                                      │                 │  │
-│   │  verify-full│◄─── ServerHello + Server Cert ──────│                 │  │
-│   │             │     + CertificateRequest             │                 │  │
-│   │  sslcert=   │                                      │                 │  │
-│   │  svid.pem   │──── Client Cert (X.509-SVID) ───────►│  Verify cert   │  │
-│   │             │     + ClientKeyExchange              │  signed by     │  │
-│   │  sslkey=    │                                      │  trusted CA    │  │
-│   │  svid-key   │◄─── Finished ───────────────────────│                 │  │
-│   │             │                                      │                 │  │
-│   │  sslrootca= │═════ Encrypted Connection ══════════►│                 │  │
-│   │  bundle.pem │                                      │                 │  │
-│   └─────────────┘                                      └─────────────────┘  │
-│                                                                              │
-│                                                                              │
-│   4. AUTHENTICATION (Certificate Verification)                              │
-│   ────────────────────────────────────────────                              │
-│                                                                              │
-│   PostgreSQL checks:                                                        │
-│   ✓ Client cert is valid (not expired)                                     │
-│   ✓ Client cert is signed by trusted CA (SPIRE CA in our case)            │
-│   ✓ Client cert chain is valid                                             │
-│                                                                              │
-│   → AUTHENTICATION SUCCESS                                                  │
-│                                                                              │
-│                                                                              │
-│   5. AUTHORIZATION (Identity Mapping)                                       │
-│   ───────────────────────────────────                                       │
-│                                                                              │
-│   PostgreSQL extracts identity from certificate:                            │
-│                                                                              │
-│   Option A: CN (Common Name)                                                │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Certificate CN: "db-client-app"                                     │   │
-│   │                        │                                             │   │
-│   │                        ▼                                             │   │
-│   │  pg_hba.conf: hostssl all all ... cert map=spiffe-map               │   │
-│   │  pg_ident.conf: spiffe-map "db-client-app" app_readonly             │   │
-│   │                                        │                             │   │
-│   │                                        ▼                             │   │
-│   │  Database user: app_readonly (with SELECT permissions)              │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│   Option B: Full SPIFFE ID (via SAN extension parsing)                      │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Certificate SAN URI:                                                │   │
-│   │  spiffe://trust-domain/ns/spiffe-demo/sa/db-client-app              │   │
-│   │                        │                                             │   │
-│   │                        ▼                                             │   │
-│   │  Custom mapping or PostgreSQL extension                              │   │
-│   │                        │                                             │   │
-│   │                        ▼                                             │   │
-│   │  Database user based on namespace/serviceaccount                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│   → AUTHORIZATION COMPLETE: User mapped to role with specific permissions  │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+EDB use case/
+├── README.md                           # This documentation
+│
+├── k8s/
+│   ├── edb/                            # PostgreSQL database resources
+│   │   ├── postgres-statefulset.yaml   # Main PostgreSQL deployment
+│   │   ├── serviceaccount.yaml         # Service account for PostgreSQL
+│   │   ├── spire-ca-secret.yaml        # Reference for SPIRE CA secret
+│   │   └── edb-cluster.yaml            # (Alternative) EDB operator config
+│   │
+│   └── db-client/                      # SPIFFE-enabled client app resources
+│       ├── namespace.yaml              # Namespace definition
+│       ├── serviceaccount.yaml         # Service account for client
+│       ├── clusterspiffeid.yaml        # SPIRE workload registration
+│       ├── configmap.yaml              # Database connection config
+│       ├── imagestream.yaml            # OpenShift image stream
+│       ├── buildconfig.yaml            # OpenShift build config
+│       ├── deployment.yaml             # Client app deployment
+│       ├── service.yaml                # Internal service
+│       └── route.yaml                  # External route
+│
+├── db-client-app/                      # Client application source
+│   ├── app.py                          # Flask application
+│   ├── requirements.txt                # Python dependencies
+│   └── Dockerfile                      # Container build file
+│
+└── scripts/
+    ├── deploy.sh                       # Automated deployment script
+    └── test-connection.sh              # Connection test script
 ```
 
 ---
 
-## PostgreSQL Certificate Authentication
+## Configuration Files Explained
 
-### Key Configuration Files
+### 1. PostgreSQL Configuration
 
-#### postgresql.conf (SSL Settings)
+#### `k8s/edb/postgres-statefulset.yaml`
 
+This file contains:
+- **ConfigMap** with PostgreSQL configuration files
+- **Service** with OpenShift TLS certificate annotation
+- **StatefulSet** for PostgreSQL
+
+**Key Configuration - `postgresql.conf`:**
 ```ini
-# Enable SSL
+# SSL Configuration
 ssl = on
-ssl_cert_file = '/path/to/server.crt'
-ssl_key_file = '/path/to/server.key'
-ssl_ca_file = '/path/to/spire-ca-bundle.pem'    # Trust SPIRE CA!
-
-# Require client certificates
-ssl_crl_file = ''                                # Optional: CRL
+ssl_cert_file = '/var/lib/postgresql/server-certs/tls.crt'
+ssl_key_file = '/var/lib/postgresql/server-certs/tls.key'
+ssl_ca_file = '/var/lib/postgresql/client-ca/ca.crt'    # SPIRE CA!
+ssl_min_protocol_version = 'TLSv1.2'
 ```
 
-#### pg_hba.conf (Authentication Rules)
-
+**Key Configuration - `pg_hba.conf`:**
 ```
-# TYPE  DATABASE  USER  ADDRESS       METHOD   OPTIONS
+# TYPE  DATABASE  USER          ADDRESS       METHOD    OPTIONS
 
-# Require client certificate authentication for all SSL connections
-hostssl  all       all   0.0.0.0/0    cert     clientcert=verify-full map=spiffe-map
-```
+# Local admin access
+local   all       postgres                    trust
 
-#### pg_ident.conf (Identity Mapping)
+# SPIFFE certificate authentication
+# verify-ca = verify cert is signed by trusted CA (SPIRE)
+# trust = allow connection if cert is valid (no password)
+hostssl all       app_readonly  0.0.0.0/0     trust     clientcert=verify-ca
+hostssl all       app_readwrite 0.0.0.0/0     trust     clientcert=verify-ca
+hostssl all       app_admin     0.0.0.0/0     trust     clientcert=verify-ca
 
-```
-# MAPNAME       SYSTEM-USERNAME                           PG-USERNAME
-
-# Map certificate CN to PostgreSQL users
-spiffe-map      "db-client-app"                           app_readonly
-spiffe-map      "db-admin-app"                            app_admin
-spiffe-map      "/^(.*)\.spiffe-demo\.svc$"               app_readonly   # Regex
+# Password auth for admin
+hostssl all       postgres      0.0.0.0/0     scram-sha-256
 ```
 
-### Authentication Flow
+**Database Initialization SQL:**
+```sql
+-- Create roles with different permission levels
+CREATE ROLE app_readonly WITH LOGIN;
+CREATE ROLE app_readwrite WITH LOGIN;
+CREATE ROLE app_admin WITH LOGIN CREATEDB CREATEROLE;
 
+-- Create demo database and table
+CREATE DATABASE appdb;
+\connect appdb
+
+CREATE TABLE demo_data (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_by VARCHAR(100)
+);
+
+-- Grant permissions
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO app_readwrite;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_admin;
+
+-- Sample data
+INSERT INTO demo_data (name, created_by) VALUES 
+  ('Sample Record 1', 'system'),
+  ('Sample Record 2', 'system'),
+  ('Sample Record 3', 'system');
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    PostgreSQL cert Authentication                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Client connects with:                                                     │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  psql "host=edb-cluster.edb.svc \                                    │   │
-│   │        port=5432 \                                                   │   │
-│   │        dbname=appdb \                                                │   │
-│   │        sslmode=verify-full \                                         │   │
-│   │        sslcert=/spiffe/svid.pem \                                    │   │
-│   │        sslkey=/spiffe/svid-key.pem \                                 │   │
-│   │        sslrootcert=/spiffe/bundle.pem"                               │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│                              │                                               │
-│                              ▼                                               │
-│                                                                              │
-│   PostgreSQL performs:                                                      │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  1. Verify client cert signed by ssl_ca_file (SPIRE CA)             │   │
-│   │                              │                                       │   │
-│   │                              ▼                                       │   │
-│   │  2. Extract CN from certificate                                      │   │
-│   │     CN = "db-client-app"                                             │   │
-│   │                              │                                       │   │
-│   │                              ▼                                       │   │
-│   │  3. Apply pg_ident.conf mapping (spiffe-map)                        │   │
-│   │     "db-client-app" → "app_readonly"                                 │   │
-│   │                              │                                       │   │
-│   │                              ▼                                       │   │
-│   │  4. Check pg_hba.conf rule matches                                   │   │
-│   │     hostssl all all ... cert map=spiffe-map ✓                       │   │
-│   │                              │                                       │   │
-│   │                              ▼                                       │   │
-│   │  5. Login as PostgreSQL user "app_readonly"                         │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+
+**Service with TLS Certificate:**
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: edb-spiffe-postgres
+  namespace: edb
+  annotations:
+    # OpenShift automatically generates TLS certificate for this service
+    service.beta.openshift.io/serving-cert-secret-name: postgres-server-tls
+spec:
+  selector:
+    app: edb-spiffe-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
 ```
 
 ---
 
-## SPIFFE Identity Mapping Options
+### 2. SPIFFE Client Configuration
 
-### The Challenge
+#### `k8s/db-client/clusterspiffeid.yaml`
 
-SPIFFE X.509-SVIDs put the identity in the **SAN (Subject Alternative Name)** as a URI:
-```
-SAN URI: spiffe://apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/ns/spiffe-demo/sa/db-client-app
-```
-
-PostgreSQL's `cert` auth method traditionally uses the **CN (Common Name)**.
-
-### Options for Mapping
-
-| Option | Approach | Complexity | Pros/Cons |
-|--------|----------|------------|-----------|
-| **A** | Use CN field | Low | Simple; SPIRE can populate CN |
-| **B** | pg_ident.conf patterns | Medium | Flexible regex matching |
-| **C** | Custom PostgreSQL extension | High | Full SAN access; complex |
-| **D** | spiffe-helper sidecar | Medium | Writes certs with custom CN |
-
-### Option A: CN-Based Mapping (Recommended)
-
-SPIRE can be configured to include a meaningful CN in certificates:
+Registers the workload with SPIRE to receive SPIFFE identities:
 
 ```yaml
-# ClusterSPIFFEID configuration
 apiVersion: spire.spiffe.io/v1alpha1
 kind: ClusterSPIFFEID
 metadata:
   name: db-client-workload
 spec:
+  # SPIFFE ID template
   spiffeIDTemplate: "spiffe://{{ .TrustDomain }}/ns/{{ .PodMeta.Namespace }}/sa/{{ .PodSpec.ServiceAccountName }}"
+  
+  # Match pods with this label
   podSelector:
     matchLabels:
-      app: db-client-app
-  # The CN will be derived from the SPIFFE ID or can be customized
+      spiffe.io/spiffe-id: "db-client-app"
+  
+  # Namespace selector
+  namespaceSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: spiffe-demo
+  
+  # Certificate TTL
+  ttl: "1h"
 ```
 
-The resulting certificate:
+#### `k8s/db-client/deployment.yaml`
+
+Key aspects of the deployment:
+
+```yaml
+spec:
+  template:
+    metadata:
+      labels:
+        app: db-client-app
+        spiffe.io/spiffe-id: "db-client-app"  # Matches ClusterSPIFFEID selector
+    spec:
+      serviceAccountName: db-client-app
+      containers:
+        - name: db-client
+          env:
+            - name: DB_HOST
+              value: "edb-spiffe-postgres.edb.svc.cluster.local"
+            - name: DB_USER
+              value: "app_readonly"
+            - name: DB_SSLMODE
+              value: "require"
+            - name: SPIFFE_ENDPOINT_SOCKET
+              value: "unix:///spiffe-workload-api/spire-agent.sock"
+          volumeMounts:
+            - name: spiffe-workload-api
+              mountPath: /spiffe-workload-api
+              readOnly: true
+      volumes:
+        - name: spiffe-workload-api
+          csi:
+            driver: csi.spiffe.io    # SPIFFE CSI Driver
+            readOnly: true
 ```
-Subject: CN = db-client-app
-SAN URI: spiffe://trust-domain/ns/spiffe-demo/sa/db-client-app
-```
 
-PostgreSQL mapping:
-```
-# pg_ident.conf
-spiffe-map      "db-client-app"      app_readonly
-```
+#### `k8s/db-client/configmap.yaml`
 
-### Option B: Regex-Based Mapping
-
-Use patterns in pg_ident.conf:
-
-```
-# pg_ident.conf - Map by service account name pattern
-spiffe-map      "/^(.+)-app$/"                    \1_user
-spiffe-map      "db-client-app"                   app_readonly
-spiffe-map      "db-admin-app"                    app_admin
-spiffe-map      "db-batch-processor"              batch_user
-```
-
-### Database Roles Setup
-
-```sql
--- Create roles with different permission levels
-CREATE ROLE app_readonly;
-GRANT CONNECT ON DATABASE appdb TO app_readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_readonly;
-
-CREATE ROLE app_readwrite;
-GRANT CONNECT ON DATABASE appdb TO app_readwrite;
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO app_readwrite;
-
-CREATE ROLE app_admin;
-GRANT ALL PRIVILEGES ON DATABASE appdb TO app_admin;
-
--- Create login users that map to these roles
-CREATE USER db_client_app WITH LOGIN;
-GRANT app_readonly TO db_client_app;
-
-CREATE USER db_admin_app WITH LOGIN;
-GRANT app_admin TO db_admin_app;
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-client-config
+  namespace: spiffe-edb-demo
+data:
+  DB_HOST: "edb-spiffe-postgres.edb.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "appdb"
+  DB_USER: "app_readonly"
+  DB_SSLMODE: "require"
 ```
 
 ---
 
-## Implementation Plan
+### 3. Client Application
 
-### Phase 1: Deploy EDB Operator and Cluster
+#### `db-client-app/app.py`
 
-1. Install EDB Operator in `edb` namespace
-2. Create EDB PostgreSQL cluster with SSL enabled
-3. Configure cluster to trust SPIRE CA
+Key functions:
 
-### Phase 2: Configure Certificate Authentication
+**Getting SPIFFE Identity:**
+```python
+from spiffe import WorkloadApiClient
 
-1. Export SPIRE CA bundle
-2. Configure PostgreSQL for client certificate auth
-3. Set up pg_ident.conf mappings
-4. Create database roles and users
+def get_x509_svid():
+    """Fetch X.509-SVID from SPIRE."""
+    client = WorkloadApiClient(SPIFFE_ENDPOINT_SOCKET)
+    x509_source = client.fetch_x509_context()
+    return x509_source.default_svid
+```
 
-### Phase 3: Deploy SPIFFE-Enabled Client
+**Connecting to PostgreSQL with Certificate:**
+```python
+import psycopg2
+import tempfile
 
-1. Create service account for db-client-app
-2. Register workload with SPIRE (ClusterSPIFFEID)
-3. Deploy client application with CSI driver mount
-4. Configure application to use X.509-SVID for database connections
+def get_db_connection():
+    svid = get_x509_svid()
+    
+    # Write certificate to temp file
+    cert_file = tempfile.NamedTemporaryFile(suffix='.pem', delete=False)
+    for cert in svid.cert_chain:
+        cert_file.write(cert.public_bytes(serialization.Encoding.PEM))
+    cert_file.close()
+    
+    # Write private key to temp file
+    key_file = tempfile.NamedTemporaryFile(suffix='.pem', delete=False)
+    key_bytes = svid.private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    key_file.write(key_bytes)
+    key_file.close()
+    
+    # Connect using certificate
+    conn = psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        dbname=DB_NAME,
+        user=DB_USER,
+        sslmode=DB_SSLMODE,
+        sslcert=cert_file.name,
+        sslkey=key_file.name
+    )
+    return conn
+```
 
-### Phase 4: Test and Verify
+#### `db-client-app/requirements.txt`
 
-1. Verify certificate issuance
-2. Test database connectivity
-3. Verify identity mapping
-4. Test different permission levels
+```
+Flask==2.3.3
+psycopg2-binary==2.9.9
+spiffe==0.2.6
+cryptography>=41.0.0
+```
 
 ---
 
-## Prerequisites
+## Step-by-Step Deployment
 
-- OpenShift cluster with:
-  - SPIRE/Zero Trust Workload Identity Manager deployed
-  - EDB Operator available (from OperatorHub)
-- `oc` CLI with cluster-admin access
-- SPIRE trust domain configured
+### Step 1: Create SPIRE CA Secret in EDB Namespace
 
----
-
-## Deployment Steps
-
-> **Note**: This demo has been successfully deployed and tested on OpenShift with SPIRE.
-
-### Step 1: Create SPIRE CA Secret
+The PostgreSQL database needs to trust the SPIRE CA to verify client certificates.
 
 ```bash
-# Export SPIRE CA bundle and create secret in edb namespace
+# Export SPIRE CA bundle from the SPIRE server ConfigMap
+# and create a secret in the edb namespace
+
 oc delete secret spire-ca-bundle -n edb --ignore-not-found
+
 oc create secret generic spire-ca-bundle \
-    --from-literal=ca.crt="$(oc get configmap spire-bundle -n zero-trust-workload-identity-manager -o jsonpath='{.data.bundle\.crt}')" \
+    --from-literal=ca.crt="$(oc get configmap spire-bundle \
+        -n zero-trust-workload-identity-manager \
+        -o jsonpath='{.data.bundle\.crt}')" \
     -n edb
+
+# Verify the secret was created
+oc get secret spire-ca-bundle -n edb
 ```
 
-### Step 2: Deploy PostgreSQL
+### Step 2: Create PostgreSQL Service Account
+
+PostgreSQL needs to run with specific permissions on OpenShift.
 
 ```bash
-# Create service account with anyuid SCC (needed for PostgreSQL)
+# Create service account
 oc create serviceaccount postgres-sa -n edb
-oc adm policy add-scc-to-user anyuid -z postgres-sa -n edb
 
-# Deploy PostgreSQL StatefulSet
-oc apply -f k8s/edb/postgres-statefulset.yaml
+# Grant anyuid SCC (required for PostgreSQL to run as uid 999)
+oc adm policy add-scc-to-user anyuid -z postgres-sa -n edb
 ```
 
-### Step 3: Deploy SPIFFE-Enabled Client
+### Step 3: Deploy PostgreSQL
 
 ```bash
-# Create namespace and resources
+# Apply the PostgreSQL StatefulSet (includes ConfigMap, Service, StatefulSet)
+oc apply -f k8s/edb/postgres-statefulset.yaml
+
+# Wait for PostgreSQL to be ready
+oc rollout status statefulset/edb-spiffe-postgres -n edb --timeout=120s
+
+# Verify the pod is running
+oc get pods -n edb
+
+# Check PostgreSQL logs
+oc logs -n edb edb-spiffe-postgres-0 -c postgres
+```
+
+### Step 4: Create Client Application Namespace
+
+```bash
+# Create namespace
 oc apply -f k8s/db-client/namespace.yaml
+
+# Label the namespace (required for ClusterSPIFFEID selector)
 oc label namespace spiffe-edb-demo app.kubernetes.io/part-of=spiffe-demo --overwrite
+```
+
+### Step 5: Deploy Client Resources
+
+```bash
+# Create service account
 oc apply -f k8s/db-client/serviceaccount.yaml
+
+# Create ConfigMap with database connection settings
 oc apply -f k8s/db-client/configmap.yaml
+
+# Create OpenShift build resources
 oc apply -f k8s/db-client/imagestream.yaml
 oc apply -f k8s/db-client/buildconfig.yaml
 
 # Register workload with SPIRE
 oc apply -f k8s/db-client/clusterspiffeid.yaml
 
-# Build and deploy client application
-oc start-build db-client-app --from-dir=db-client-app -n spiffe-edb-demo --follow
+# Verify ClusterSPIFFEID was created
+oc get clusterspiffeids
+```
+
+### Step 6: Build Client Application
+
+```bash
+# Build the container image from source
+oc start-build db-client-app \
+    --from-dir=db-client-app \
+    -n spiffe-edb-demo \
+    --follow
+
+# Wait for build to complete
+oc get builds -n spiffe-edb-demo
+```
+
+### Step 7: Deploy Client Application
+
+```bash
+# Deploy the application
 oc apply -f k8s/db-client/deployment.yaml
 oc apply -f k8s/db-client/service.yaml
 oc apply -f k8s/db-client/route.yaml
-```
 
-### Step 4: Test the Demo
+# Wait for deployment to be ready
+oc rollout status deployment/db-client-app -n spiffe-edb-demo --timeout=120s
 
-```bash
 # Get the application URL
-APP_URL=$(oc get route db-client-app -n spiffe-edb-demo -o jsonpath='{.spec.host}')
-echo "Application URL: https://$APP_URL"
-
-# Test SPIFFE identity
-curl -sk https://$APP_URL/api/identity | jq .
-
-# Test database connection
-curl -sk https://$APP_URL/api/db/test | jq .
-
-# Query data (should work - SELECT allowed)
-curl -sk https://$APP_URL/api/db/query | jq .
-
-# Insert data (should fail - app_readonly role)
-curl -sk -X POST https://$APP_URL/api/db/insert | jq .
-```
-
-### Directory Structure
-
-```
-EDB use case/
-├── README.md                      # This file
-├── k8s/
-│   ├── edb/
-│   │   ├── namespace.yaml
-│   │   ├── edb-cluster.yaml       # EDB PostgreSQL cluster
-│   │   ├── ssl-config.yaml        # SSL/TLS configuration
-│   │   └── pg-config.yaml         # pg_hba.conf, pg_ident.conf
-│   └── db-client/
-│       ├── serviceaccount.yaml
-│       ├── clusterspiffeid.yaml   # SPIRE registration
-│       ├── deployment.yaml
-│       ├── configmap.yaml
-│       └── service.yaml
-├── db-client-app/
-│   ├── app.py                     # Python app using psycopg2 with SSL
-│   ├── requirements.txt
-│   └── Dockerfile
-└── scripts/
-    ├── export-spire-ca.sh         # Export SPIRE CA bundle
-    └── test-connection.sh         # Test database connectivity
+oc get route db-client-app -n spiffe-edb-demo -o jsonpath='{.spec.host}'
 ```
 
 ---
 
-## Testing
+## Testing the Demo
 
-### Verify Certificate
-
-```bash
-# Check the certificate issued to the pod
-oc exec -n spiffe-demo deploy/db-client-app -- \
-  openssl x509 -in /spiffe/svid.pem -text -noout
-
-# Expected output includes:
-# Subject: CN = db-client-app
-# X509v3 Subject Alternative Name:
-#     URI:spiffe://trust-domain/ns/spiffe-demo/sa/db-client-app
-```
-
-### Test Database Connection
+### Get Application URL
 
 ```bash
-# From within the pod
-oc exec -n spiffe-demo deploy/db-client-app -- \
-  psql "host=edb-cluster.edb.svc \
-        port=5432 \
-        dbname=appdb \
-        sslmode=verify-full \
-        sslcert=/spiffe/svid.pem \
-        sslkey=/spiffe/svid-key.pem \
-        sslrootcert=/spiffe/bundle.pem" \
-  -c "SELECT current_user, session_user;"
+APP_URL=$(oc get route db-client-app -n spiffe-edb-demo -o jsonpath='{.spec.host}')
+echo "Application URL: https://$APP_URL"
 ```
 
-### Verify Permissions
+### Test 1: Verify SPIFFE Identity
 
 ```bash
-# Should work (SELECT allowed for app_readonly)
-psql ... -c "SELECT * FROM users LIMIT 1;"
-
-# Should fail (INSERT not allowed for app_readonly)
-psql ... -c "INSERT INTO users (name) VALUES ('test');"
-# ERROR: permission denied for table users
+curl -sk https://$APP_URL/api/identity | jq .
 ```
+
+**Expected Output:**
+```json
+{
+  "spiffe_id": "spiffe://apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/ns/spiffe-edb-demo/sa/db-client-app",
+  "spiffe_available": true,
+  "certificate_count": 1,
+  "expires_at": "2026-04-08T00:09:05"
+}
+```
+
+### Test 2: View Certificate Details
+
+```bash
+curl -sk https://$APP_URL/api/certificate | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "subject": {
+    "countryName": "US",
+    "organizationName": "SPIRE"
+  },
+  "common_name": "N/A",
+  "san_uris": [
+    "spiffe://apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com/ns/spiffe-edb-demo/sa/db-client-app"
+  ],
+  "issuer": {
+    "commonName": "SPIRE Server CA",
+    "countryName": "US",
+    "organizationName": "Red Hat Demo"
+  },
+  "not_valid_before": "2026-04-07T23:08:55",
+  "not_valid_after": "2026-04-08T00:09:05"
+}
+```
+
+### Test 3: Test Database Connection
+
+```bash
+curl -sk https://$APP_URL/api/db/test | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "status": "connected",
+  "current_user": "app_readonly",
+  "session_user": "app_readonly",
+  "database": "appdb",
+  "postgres_version": "PostgreSQL 16.2 ...",
+  "authentication": "X.509 Certificate (SPIFFE SVID)",
+  "ssl_mode": "require"
+}
+```
+
+### Test 4: Query Data (SELECT)
+
+```bash
+curl -sk https://$APP_URL/api/db/query | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "status": "success",
+  "operation": "SELECT",
+  "row_count": 3,
+  "data": [
+    {"id": 1, "name": "Sample Record 1", "created_by": "system"},
+    {"id": 2, "name": "Sample Record 2", "created_by": "system"},
+    {"id": 3, "name": "Sample Record 3", "created_by": "system"}
+  ]
+}
+```
+
+### Test 5: Insert Data (Should Fail - Read Only)
+
+```bash
+curl -sk -X POST https://$APP_URL/api/db/insert | jq .
+```
+
+**Expected Output:**
+```json
+{
+  "status": "error",
+  "operation": "INSERT",
+  "error": "permission denied for table demo_data\n",
+  "hint": "Your SPIFFE identity is mapped to a read-only role. INSERT requires app_readwrite or app_admin role."
+}
+```
+
+### Web UI
+
+You can also open the application URL in a browser to use the interactive web interface:
+
+```
+https://db-client-app-spiffe-edb-demo.apps.rosa.rosa-69t6c.hyq5.p3.openshiftapps.com
+```
+
+---
+
+## How It Works
+
+### Authentication Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SPIFFE Certificate Authentication Flow                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   1. POD STARTS - SPIFFE CSI Driver mounts Workload API socket              │
+│                                                                              │
+│   ┌─────────────┐         ┌─────────────┐         ┌─────────────┐          │
+│   │ db-client   │  Attest │   SPIRE     │ Request │   SPIRE     │          │
+│   │ Pod         │────────►│   Agent     │────────►│   Server    │          │
+│   └─────────────┘         └─────────────┘         └─────────────┘          │
+│                                                          │                  │
+│                                                          │ Issue X.509-SVID │
+│                                                          ▼                  │
+│                                                   Certificate with:         │
+│                                                   • SAN: spiffe://...       │
+│                                                   • 1 hour TTL              │
+│                                                                              │
+│   2. APP FETCHES SVID via Workload API                                      │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Python App calls:                                                   │   │
+│   │  client = WorkloadApiClient("unix:///spiffe-workload-api/...")      │   │
+│   │  svid = client.fetch_x509_context().default_svid                    │   │
+│   │                                                                      │   │
+│   │  svid.cert_chain  → X.509 Certificate                               │   │
+│   │  svid.private_key → Private Key                                     │   │
+│   │  svid.spiffe_id   → spiffe://trust-domain/ns/.../sa/...            │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   3. TLS HANDSHAKE WITH POSTGRESQL                                          │
+│                                                                              │
+│   ┌─────────────┐                                      ┌─────────────────┐  │
+│   │ db-client   │                                      │  PostgreSQL     │  │
+│   │             │──── TLS ClientHello ────────────────►│                 │  │
+│   │             │                                      │                 │  │
+│   │             │◄─── ServerHello + Server Cert ──────│                 │  │
+│   │             │     + CertificateRequest             │                 │  │
+│   │             │                                      │                 │  │
+│   │  sslcert=   │──── Client Cert (X.509-SVID) ───────►│  Verify cert   │  │
+│   │  svid.pem   │                                      │  against       │  │
+│   │             │                                      │  SPIRE CA      │  │
+│   │  sslkey=    │◄─── Finished ───────────────────────│                 │  │
+│   │  key.pem    │                                      │                 │  │
+│   │             │═════ Encrypted SQL Connection ══════►│                 │  │
+│   └─────────────┘                                      └─────────────────┘  │
+│                                                                              │
+│   4. POSTGRESQL VERIFIES CERTIFICATE                                        │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  PostgreSQL checks:                                                  │   │
+│   │                                                                      │   │
+│   │  ssl_ca_file = /var/lib/postgresql/client-ca/ca.crt (SPIRE CA)     │   │
+│   │                                                                      │   │
+│   │  ✓ Certificate is valid (not expired)                               │   │
+│   │  ✓ Certificate is signed by trusted CA (SPIRE CA)                   │   │
+│   │  ✓ Certificate chain is valid                                        │   │
+│   │                                                                      │   │
+│   │  pg_hba.conf rule matched:                                           │   │
+│   │  hostssl all app_readonly 0.0.0.0/0 trust clientcert=verify-ca      │   │
+│   │                                                                      │   │
+│   │  → Connection allowed as user "app_readonly"                         │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   5. AUTHORIZATION (Role-Based Permissions)                                 │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  app_readonly role permissions:                                      │   │
+│   │  • SELECT on demo_data ✓                                            │   │
+│   │  • INSERT on demo_data ✗ (permission denied)                        │   │
+│   │  • UPDATE on demo_data ✗ (permission denied)                        │   │
+│   │  • DELETE on demo_data ✗ (permission denied)                        │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Technical Points
+
+1. **SPIFFE Certificates Don't Have CN**: By default, SPIFFE X.509-SVIDs don't include a Common Name (CN). The identity is in the SAN (Subject Alternative Name) as a URI.
+
+2. **clientcert=verify-ca**: We use `clientcert=verify-ca` instead of `clientcert=verify-full` because PostgreSQL's `verify-full` tries to match the CN, which doesn't exist in SPIFFE certs.
+
+3. **Trust Authentication with Certificate Verification**: The combination of `trust` auth method with `clientcert=verify-ca` means:
+   - The certificate must be signed by the SPIRE CA (authentication)
+   - Once verified, the user specified in the connection string is trusted
+   - This is appropriate because any workload that can present a valid SPIRE certificate is already authenticated
+
+4. **User Role Selection**: The client application specifies which PostgreSQL user to connect as (`app_readonly`). Different SPIFFE-enabled workloads could connect as different users based on their needs.
 
 ---
 
 ## Troubleshooting
 
-### Certificate Not Trusted
+### Check SPIRE Components
 
-```
-FATAL: certificate authentication failed for user "db-client-app"
-```
+```bash
+# Check SPIRE server and agents
+oc get pods -n zero-trust-workload-identity-manager
 
-**Check:**
-1. SPIRE CA bundle is correctly configured in PostgreSQL `ssl_ca_file`
-2. Certificate hasn't expired (SPIFFE certs are short-lived!)
-3. Certificate chain is complete
+# Check ClusterSPIFFEID registrations
+oc get clusterspiffeids
 
-### Identity Mapping Failed
-
-```
-FATAL: no pg_ident.conf entry for certificate CN "db-client-app"
+# Check if the workload received an identity
+oc describe clusterspiffeid db-client-workload
 ```
 
-**Check:**
-1. pg_ident.conf has correct mapping
-2. Map name in pg_hba.conf matches pg_ident.conf
-3. CN in certificate matches expected value
+### Check PostgreSQL
 
-### Connection Refused
+```bash
+# Check PostgreSQL pod status
+oc get pods -n edb
 
+# Check PostgreSQL logs
+oc logs -n edb edb-spiffe-postgres-0 -c postgres
+
+# Connect to PostgreSQL directly (as admin)
+oc exec -it edb-spiffe-postgres-0 -n edb -- psql -U postgres -d appdb
+
+# Inside psql, check roles
+\du
+
+# Check pg_hba.conf being used
+SHOW hba_file;
 ```
-psql: error: connection to server failed: Connection refused
+
+### Check Client Application
+
+```bash
+# Check client pod status
+oc get pods -n spiffe-edb-demo
+
+# Check client logs
+oc logs -n spiffe-edb-demo deploy/db-client-app
+
+# Check if SPIFFE socket is mounted
+oc exec -n spiffe-edb-demo deploy/db-client-app -- ls -la /spiffe-workload-api/
+
+# Check environment variables
+oc exec -n spiffe-edb-demo deploy/db-client-app -- env | grep DB
 ```
 
-**Check:**
-1. EDB cluster is running: `oc get pods -n edb`
-2. Service is correctly configured
-3. Network policies allow traffic
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| "certificate verify failed" | Check SPIRE CA secret is correctly mounted in PostgreSQL |
+| "permission denied for table" | Working as expected for read-only role; use different role for writes |
+| "no identity issued" | Check ClusterSPIFFEID selector matches pod labels |
+| Pod won't start | Check SCC permissions for service account |
 
 ---
 
-## Next Steps
+## Key Learnings
 
-After completing this setup, you can:
+### What We Demonstrated
 
-1. **Add more workloads** with different SPIFFE IDs → different database roles
-2. **Implement row-level security** based on certificate identity
-3. **Set up audit logging** to track which SPIFFE identity accessed what
-4. **Configure certificate rotation handling** for long-running connections
+1. **Zero-Password Database Authentication**: The client application connects to PostgreSQL without any password, using only its SPIFFE certificate.
+
+2. **Automatic Certificate Rotation**: SPIFFE certificates are short-lived (~1 hour) and automatically rotated by SPIRE.
+
+3. **Workload Identity**: The database connection is tied to workload identity, not secrets or service accounts.
+
+4. **Role-Based Authorization**: Different permissions can be granted based on which user the SPIFFE workload connects as.
+
+### SPIFFE Certificate Challenge
+
+SPIFFE X.509-SVIDs don't include a CN (Common Name) by default. The identity is stored in the SAN URI:
+```
+spiffe://trust-domain/ns/namespace/sa/serviceaccount
+```
+
+PostgreSQL's traditional `cert` authentication method expects a CN for user mapping. Our workaround:
+- Use `clientcert=verify-ca` to verify the certificate is signed by SPIRE CA
+- Use `trust` authentication method (since certificate proves identity)
+- Specify the username in the connection string
+
+### Production Considerations
+
+For production, consider:
+
+1. **Configure SPIRE to include CN**: Modify SPIRE server configuration to include meaningful CN in certificates
+2. **Use external authorization**: Combine with OPA or other policy engine for fine-grained authorization
+3. **Certificate rotation handling**: Ensure application handles certificate renewal gracefully
+4. **Audit logging**: Enable PostgreSQL logging for connection events
+5. **Network policies**: Restrict which pods can connect to the database
 
 ---
 
 ## Resources
 
 - [SPIFFE Specification](https://spiffe.io/docs/latest/spiffe-about/spiffe-concepts/)
+- [SPIRE Documentation](https://spiffe.io/docs/latest/spire-about/)
 - [PostgreSQL SSL/TLS Documentation](https://www.postgresql.org/docs/current/ssl-tcp.html)
 - [PostgreSQL Certificate Authentication](https://www.postgresql.org/docs/current/auth-cert.html)
-- [EDB Operator Documentation](https://www.enterprisedb.com/docs/)
 - [Red Hat Zero Trust Workload Identity Manager](https://docs.redhat.com/en/documentation/openshift_container_platform/4.21/html/security_and_compliance/zero-trust-workload-identity-manager)
+- [py-spiffe Library](https://github.com/spiffe/py-spiffe)
