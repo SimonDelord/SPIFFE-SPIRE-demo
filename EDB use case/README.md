@@ -468,7 +468,69 @@ GRANT app_admin TO db_admin_app;
 
 ## Deployment Steps
 
-*Detailed deployment manifests and scripts will be added in subsequent sections.*
+> **Note**: This demo has been successfully deployed and tested on OpenShift with SPIRE.
+
+### Step 1: Create SPIRE CA Secret
+
+```bash
+# Export SPIRE CA bundle and create secret in edb namespace
+oc delete secret spire-ca-bundle -n edb --ignore-not-found
+oc create secret generic spire-ca-bundle \
+    --from-literal=ca.crt="$(oc get configmap spire-bundle -n zero-trust-workload-identity-manager -o jsonpath='{.data.bundle\.crt}')" \
+    -n edb
+```
+
+### Step 2: Deploy PostgreSQL
+
+```bash
+# Create service account with anyuid SCC (needed for PostgreSQL)
+oc create serviceaccount postgres-sa -n edb
+oc adm policy add-scc-to-user anyuid -z postgres-sa -n edb
+
+# Deploy PostgreSQL StatefulSet
+oc apply -f k8s/edb/postgres-statefulset.yaml
+```
+
+### Step 3: Deploy SPIFFE-Enabled Client
+
+```bash
+# Create namespace and resources
+oc apply -f k8s/db-client/namespace.yaml
+oc label namespace spiffe-edb-demo app.kubernetes.io/part-of=spiffe-demo --overwrite
+oc apply -f k8s/db-client/serviceaccount.yaml
+oc apply -f k8s/db-client/configmap.yaml
+oc apply -f k8s/db-client/imagestream.yaml
+oc apply -f k8s/db-client/buildconfig.yaml
+
+# Register workload with SPIRE
+oc apply -f k8s/db-client/clusterspiffeid.yaml
+
+# Build and deploy client application
+oc start-build db-client-app --from-dir=db-client-app -n spiffe-edb-demo --follow
+oc apply -f k8s/db-client/deployment.yaml
+oc apply -f k8s/db-client/service.yaml
+oc apply -f k8s/db-client/route.yaml
+```
+
+### Step 4: Test the Demo
+
+```bash
+# Get the application URL
+APP_URL=$(oc get route db-client-app -n spiffe-edb-demo -o jsonpath='{.spec.host}')
+echo "Application URL: https://$APP_URL"
+
+# Test SPIFFE identity
+curl -sk https://$APP_URL/api/identity | jq .
+
+# Test database connection
+curl -sk https://$APP_URL/api/db/test | jq .
+
+# Query data (should work - SELECT allowed)
+curl -sk https://$APP_URL/api/db/query | jq .
+
+# Insert data (should fail - app_readonly role)
+curl -sk -X POST https://$APP_URL/api/db/insert | jq .
+```
 
 ### Directory Structure
 
